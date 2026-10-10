@@ -6,7 +6,8 @@ import { HttpError } from './httpError.ts';
 import { ONE_TURN } from './prompts.ts';
 import { MAX_TRIAGES, type TriagePr } from './triage.ts';
 
-// The CEO: a Claude Code session in the lobby that runs the company instead of writing code.
+// The CEO: a coding-agent session in the lobby that runs the company instead of writing code. It runs the office's
+// default coding agent, or the one the manager picks for it, and reaches the office through its tools below.
 // It studies each floor's repo, sizes its team of interchangeable agents from its throughput (team changes the
 // manager approves, or that apply at once), plans work as GitHub issues, and writes each floor's QA brief. Everything
 // it changes goes through the office tools below, so the swarm stays the single source of truth.
