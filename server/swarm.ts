@@ -11,7 +11,7 @@ import { afterClose, ASK_AGAIN_MS, closedWhy, closuresHeld, forgettable, issueOp
 import { depsPromptLine, type DepsOutcome } from './deps.ts';
 import { setUpDesk } from './deskSetup.ts';
 import { fixOutcome, MAX_FIX_FAILURES } from './fixOutcome.ts';
-import { fixGoesTo, pickTester, PREP_HOLD_MS, prepFailure, prepHeld, type PrepStrikes } from './handOut.ts';
+import { fixGoesTo, pickTester, PREP_HOLD_MS, prepFailure, prepHeld, type PrepStrikes, type TesterPairing } from './handOut.ts';
 import { HttpError } from './httpError.ts';
 import { IssueAges } from './issueAges.ts';
 import { issuesResolvedBy, issueTaken } from './issueClaims.ts';
@@ -2281,6 +2281,12 @@ export class Swarm {
     return effectiveModel(a.model, cli ?? 'claude', this.state.settings, DEFAULT_MODEL);
   }
 
+  /** What an agent actually runs, office default resolved: the pairing QA is preferred to differ from the author by (#8). */
+  private pairingOf(a: PersistedAgent): TesterPairing {
+    const cli = a.role === 'ceo' ? 'claude' : a.cli || this.state.settings.defaultCli;
+    return { cli, model: this.modelFor(a, cli) };
+  }
+
   // ---------- terminals ----------
 
   private async loadTerminal(agentId: string): Promise<AgentTerminal | null> {
@@ -3322,9 +3328,10 @@ export class Swarm {
 
   /**
    * Finish work in flight: test queued PRs (oldest first) and get failed ones fixed. Returns true if work started.
-   * Any free agent but the PR's author tests it (handOut.ts pickTester); its author goes on with other work meanwhile. A failed PR goes back to its author when they're free; while the
-   * author is still in a session on it, it waits for them; otherwise any free agent takes it. A PR whose desks keep
-   * failing to set up sits out.
+   * Any free agent but the PR's author tests it (handOut.ts pickTester), preferring a tester whose resolved coding agent
+   * (then model) differs from the author's (#8); the author goes on with other work meanwhile. A failed PR goes back to
+   * its author when they're free; while the author is still in a session on it, it waits for them; otherwise any free
+   * agent takes it. A PR whose desks keep failing to set up sits out.
    */
   private startPipelineWork(repo: PersistedRepo): boolean {
     const free = this.available(repo);
@@ -3345,7 +3352,9 @@ export class Swarm {
     const owed = new Set(fixes.map((q) => q.devAgentId).filter((id): id is string => !!id));
     for (const rec of waiting('queued', 'qa')) {
       const othersCan = this.state.agents.some((a) => a.repoId === repo.id && a.role !== 'ceo' && a.id !== rec.devAgentId && a.status !== 'stopped');
-      const tester = pickTester(free, rec.devAgentId, owed, othersCan, now - rec.updatedAt);
+      const author = rec.devAgentId ? (this.state.agents.find((a) => a.id === rec.devAgentId) ?? null) : null;
+      // Prefer a tester whose coding agent (then model) differs from the author's, so cheap builders get a second pair of eyes (#8).
+      const tester = pickTester(free, rec.devAgentId, (a) => this.pairingOf(a), author ? this.pairingOf(author) : null, owed, othersCan, now - rec.updatedAt);
       if (!tester) continue;
       void this.runQa(tester, repo, rec);
       return true;
