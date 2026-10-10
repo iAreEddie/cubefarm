@@ -3188,6 +3188,40 @@ input.inline:focus {
 .md-deadlink {
   text-decoration: underline dotted;
 }
+/* a file path (ui/PathLink.tsx): "Show in folder"; long paths wrap anywhere instead of widening a 390px phone */
+.md a.md-path {
+  font-weight: 500;
+  word-break: break-all;
+}
+.md-path > [aria-hidden] {
+  margin-right: 0.2em;
+  font-size: 0.9em;
+}
+.path-sheet-path {
+  font-family: var(--mono);
+  font-size: 0.82em;
+  overflow-wrap: anywhere;
+  margin: 0 0 10px;
+}
+.path-sheet-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.path-sheet-text {
+  max-height: 60vh;
+  overflow: auto;
+  border-radius: 8px;
+  background: rgba(31, 29, 43, 0.05);
+  padding: 8px 10px;
+}
+.path-sheet-text pre {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--mono);
+  font-size: 0.82em;
+}
 .md code {
   font-family: var(--mono);
   font-size: 0.86em;

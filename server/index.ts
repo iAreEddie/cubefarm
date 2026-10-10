@@ -18,6 +18,7 @@ import { serviceWorkerSource, swVersion } from './pwa.ts';
 import { screenStatus } from './screenReply.ts';
 import { parseSendBackNote } from './sendBack.ts';
 import { PresenceHub } from './presence.ts';
+import { sameOrigin } from './reveal.ts';
 import { HttpError, Swarm } from './swarm.ts';
 
 const swarm = new Swarm(DEMO ? createDemoBackend(DEMO_SCALE) : realBackend);
@@ -263,6 +264,27 @@ app.get(
   }),
 );
 app.post('/api/journal/sample', route(() => swarm.journalSample()));
+
+// Paths in messages (server/reveal.ts): "Show in folder" on the PC, and the phone's read-only viewer. Reveal only:
+// a phone's requests look like loopback too, so nothing here opens or runs a file.
+const fromOffice = (req: Request) => {
+  if (!sameOrigin(req.headers)) throw new HttpError(403, 'Only the office’s own page can do that');
+};
+app.post(
+  '/api/files/reveal',
+  route((req) => {
+    fromOffice(req);
+    return swarm.revealPath(req.body?.path);
+  }),
+);
+app.get(
+  '/api/files/text',
+  route((req, res) => {
+    fromOffice(req);
+    res.setHeader('Cache-Control', 'no-store');
+    return swarm.readTextFile(req.query.path);
+  }),
+);
 
 // The CEO and the manager's phone
 app.post('/api/ceo/message', route((req) => swarm.messageCeo(str(req.body.text))));

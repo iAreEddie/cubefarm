@@ -830,7 +830,7 @@ export function ManagerConsole({ initialTab, initialRepo, card }: { initialTab?:
       </div>
       <div className="tab-body" role="tabpanel" aria-label={tabs.find(([k]) => k === tab)?.[1]}>
         {tab === 'floors' && <FloorsTab />}
-        {tab === 'ops' && <OpsTab card={card} />}
+        {tab === 'ops' && <OpsTab card={card} onOpenTab={setTab} />}
         {tab === 'ceo' && <CeoTab />}
         {tab === 'team' && <TeamTab />}
         {tab === 'issues' && <IssuesTab initialRepo={initialRepo} />}

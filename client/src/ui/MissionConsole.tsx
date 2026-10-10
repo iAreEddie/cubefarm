@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { api } from '../api';
 import { fmtDuration, fmtPct, fmtUsd, usageMeter } from '../ops';
-import { useStore } from '../store';
+import { useStore, type ManagerTab } from '../store';
 import type { DoctorFinding, DoctorFix, OpsAlarm, OpsNumbers, RepoView } from '../../../shared/types';
 import { confirmDialog } from './Confirm';
 
@@ -89,7 +89,7 @@ function UsageCard({ hot }: { hot: boolean }) {
   );
 }
 
-function AlarmCard({ alarm, repo, hot }: { alarm: OpsAlarm; repo: RepoView | undefined; hot: boolean }) {
+function AlarmCard({ alarm, repo, hot, onOpenTab }: { alarm: OpsAlarm; repo: RepoView | undefined; hot: boolean; onOpenTab: (tab: ManagerTab) => void }) {
   const openOverlay = useStore((s) => s.openOverlay);
   const goToFloor = useStore((s) => s.goToFloor);
   const pr = alarm.prNumber !== null ? repo?.pulls.find((p) => p.number === alarm.prNumber) : undefined;
@@ -124,7 +124,7 @@ function AlarmCard({ alarm, repo, hot }: { alarm: OpsAlarm; repo: RepoView | und
             )}
           </>
         ) : alarm.kind === 'team' ? (
-          <button className="btn btn-small" title="Change someone's Takes in the Team tab" onClick={() => openOverlay({ kind: 'manager', tab: 'team' })}>
+          <button className="btn btn-small" title="Change someone's Takes in the Team tab" onClick={() => onOpenTab('team')}>
             👥 Open the Team tab
           </button>
         ) : (
@@ -298,7 +298,8 @@ function OpsTable() {
   );
 }
 
-export function OpsTab({ card }: { card?: string }) {
+/** onOpenTab: switches the console it's shown in (it's only ever shown inside one). */
+export function OpsTab({ card, onOpenTab }: { card?: string; onOpenTab: (tab: ManagerTab) => void }) {
   const alarms = useStore((s) => s.ops.alarms);
   const repos = useStore((s) => s.repos);
   useEffect(() => {
@@ -311,7 +312,7 @@ export function OpsTab({ card }: { card?: string }) {
         <h3 className="section">🚨 Needs you {alarms.length > 0 && <span className="badge">{alarms.length}</span>}</h3>
         {alarms.length === 0 && <p className="muted small">All clear. The beacon on the lobby's mission control wall spins when a PR needs you or an agent has been stuck on an error for 10 minutes.</p>}
         {alarms.map((a) => (
-          <AlarmCard key={a.id} alarm={a} repo={repos.find((r) => r.id === a.repoId)} hot={a.id === card} />
+          <AlarmCard key={a.id} alarm={a} repo={repos.find((r) => r.id === a.repoId)} hot={a.id === card} onOpenTab={onOpenTab} />
         ))}
         <DoctorSection hot={card === 'doctor'} />
       </div>

@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import * as github from './github.ts';
 import * as workspace from './workspace.ts';
@@ -10,6 +11,8 @@ import { realPreviews, type PreviewBackend } from './previewRunner.ts';
 import { realOffice, type OfficeHost } from './officeUpdate.ts';
 import { elevenLabs } from './elevenlabs.ts';
 import { httpTransport, type NotifyTransport } from './notifier.ts';
+import { HttpError } from './httpError.ts';
+import { revealCommand } from './reveal.ts';
 import type { VoiceApi } from './voice.ts';
 import { openMeteo, type WeatherApi } from './weather.ts';
 import type { AgentTerminal } from './terminal.ts';
@@ -94,6 +97,8 @@ export interface Backend {
   weather: WeatherApi;
   /** Notifications to the chat apps and push services (docs/pocket.md). */
   notify: NotifyTransport;
+  /** Show an already-checked path selected in the PC's file manager (server/reveal.ts); never opens or runs it. */
+  revealPath(p: string): Promise<void>;
   /** The demo only: a made-up past week for mission control, so a fresh demo office has numbers from the start. */
   seedOps?(repos: string[], now: number): OpsHistory;
   /** The demo only: how many agents a fresh demo office hires on floor `floor`. */
@@ -165,4 +170,15 @@ export const realBackend: Backend = {
   voice: elevenLabs,
   weather: openMeteo,
   notify: httpTransport,
+  revealPath: (p) => {
+    const { file, args } = revealCommand(process.platform, p);
+    return new Promise((resolve, reject) => {
+      // No windowsHide: it's the window we want shown. Explorer exits with 1 even when it worked, so only a failure
+      // to start the file manager is an error.
+      execFile(file, args, { timeout: 15_000 }, (err) => {
+        if ((err as { code?: unknown } | null)?.code === 'ENOENT') reject(new HttpError(501, `${file} isn't available on this PC`));
+        else resolve();
+      });
+    });
+  },
 };

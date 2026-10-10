@@ -825,6 +825,8 @@ export function createDemoBackend(scale: DemoScale | null = null): Backend {
     voice: demoVoice,
     weather: demoWeather,
     notify: demoNotify,
+    // Paths in messages were checked against SWARM_HOME (the demo's only root) before they get here.
+    revealPath: async (p) => console.log(`📂 demo: would show ${p} in the file manager`),
     seedOps: (ids, at) => demoPastWeek(ids, at),
     demoTeam: (floor) => demoTeam(scale, floor),
     simulateUsage: demoUsage,
@@ -1108,6 +1110,16 @@ export function demoShrink(f: DemoFloor): { size: number; reason: string } | nul
 }
 
 /** A scripted CEO that uses the real office tools, so team changes, profiles and issues behave exactly as in the real thing. */
+/** The demo CEO's notes file in SWARM_HOME, written once so its path in a reply can be shown and read. */
+function demoCeoNotes(): string {
+  const file = path.join(HOME_DIR, 'ceo', 'NOTES.md');
+  if (!fs.existsSync(file)) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '# Company notes (demo)\n\n- The demo CEO keeps its notes here, as the real one does.\n- Nothing in this file is real.\n');
+  }
+  return file;
+}
+
 function ceoSession(opts: SessionOptions, cb: SessionCallbacks): SessionHandle {
   const office = opts.office!;
   const timers: NodeJS.Timeout[] = [];
@@ -1286,6 +1298,8 @@ function ceoSession(opts: SessionOptions, cb: SessionCallbacks): SessionHandle {
         '1. Merge anything that passed QA',
         '2. Run `npm run build` on each floor before the next milestone',
         '3. Grow a team only where work keeps waiting for free agents',
+        '',
+        `My notes on the company are in \`${demoCeoNotes()}\`.`,
         '',
         '```bash',
         'SWARM_HOME=/tmp/cubefarm-demo SWARM_PORT=5260 node --import tsx server/index.ts --demo',
