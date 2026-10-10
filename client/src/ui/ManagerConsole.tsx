@@ -492,7 +492,7 @@ function TeamTab() {
                       <EffortSelect agent={a} style={{ width: 124 }} />
                     </td>
                     <td>
-                      <TakesSelect agent={a} style={{ width: 150 }} />
+                      <TakesSelect agent={a} style={{ width: 170 }} />
                     </td>
                     <td className="nowrap">
                       <button className="btn btn-small" onClick={() => openOverlay({ kind: 'terminal', agentId: a.id })}>
