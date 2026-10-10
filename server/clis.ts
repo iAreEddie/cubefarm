@@ -1,8 +1,9 @@
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { run } from './exec.ts';
-import type { AgentCli, CliView, EffortLevel } from '../shared/types.ts';
+import type { AgentCli, AgentRole, CliView, EffortLevel } from '../shared/types.ts';
 
 // The coding-agent CLIs an agent can run in its terminal, how to find them on this machine, and how to start one on
 // a task. Claude Code is fully wired in: its hooks report every tool call to the office.
@@ -117,13 +118,61 @@ export function commandFor(id: AgentCli): { file: string; args: string[] } | nul
   return { file: found, args: [] };
 }
 
-/** Which CLIs this machine has, with their versions. */
+// ---------- OpenCode: two command lines ----------
+
+/**
+ * Whether this OpenCode is the 2.x line. Two things changed between it and 1.x that the office has to get right: the
+ * bare command became the interactive TUI (the message-taking form is the `run` subcommand), and the flag that
+ * auto-approves permissions went from `--dangerously-skip-permissions` to `--auto`. A machine can have both — a WinGet
+ * 1.x build and an npm 2.x one — and PATH decides which the office finds, so it asks this one.
+ */
+let opencodeAuto: boolean | undefined;
+
+/** The major version in what an OpenCode prints for `--version`: 'opencode v2.0.26' and '1.4.10' alike. */
+export function opencodeMajor(printed: string): number | null {
+  const major = printed.match(/v?(\d+)\.\d+\.\d+/)?.[1];
+  return major === undefined ? null : Number(major);
+}
+
+/**
+ * Asks one OpenCode binary which line it is: `--version` only, so nothing is spent on a model. Unreadable, missing or
+ * silent counts as 1.x, whose flag exists in both lines.
+ */
+export function opencodeUsesAuto(file: string): boolean {
+  if (opencodeAuto !== undefined) return opencodeAuto;
+  opencodeAuto = false;
+  try {
+    const out = spawnSync(file, ['--version'], { encoding: 'utf8', timeout: 20_000, windowsHide: true });
+    const major = opencodeMajor(`${out.stdout ?? ''}${out.stderr ?? ''}`);
+    if (major !== null) opencodeAuto = major >= 2;
+  } catch {
+    // Keep the conservative answer.
+  }
+  return opencodeAuto;
+}
+
+/**
+ * The models OpenCode says it can run: its own `models` subcommand, which lists the providers it is signed in to and
+ * contacts them, so it is given a longer timeout and any failure is just an empty list. Only OpenCode can be asked:
+ * Claude Code's models are the ones the office ships, and Codex validates `--model` itself (shared/models.ts).
+ */
+export function parseOpencodeModels(printed: string): string[] {
+  return [...new Set(
+    printed
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter((l) => /^[\w.-]+\/[\w.:#-]+$/.test(l)),
+  )].slice(0, 60);
+}
+
+/** Which CLIs this machine has, with their versions and, where the CLI can say, the models it can run. */
 export async function detectClis(): Promise<CliView[]> {
   return Promise.all(
     CLIS.map(async (c) => {
       const cmd = commandFor(c.id);
       const version = cmd ? await run(cmd.file, [...cmd.args, '--version'], { timeoutMs: 20_000 }).catch(() => null) : null;
-      return { id: c.id, label: c.label, installed: !!cmd, version: version?.split(/\r?\n/)[0].trim().slice(0, 60) || null, integrated: c.integrated };
+      const models = cmd && c.id === 'opencode' ? parseOpencodeModels(await run(cmd.file, [...cmd.args, 'models'], { timeoutMs: 60_000 }).catch(() => '')) : [];
+      return { id: c.id, label: c.label, installed: !!cmd, version: version?.split(/\r?\n/)[0].trim().slice(0, 60) || null, integrated: c.integrated, models };
     }),
   );
 }
@@ -149,6 +198,16 @@ export interface LaunchContext {
   plugin: string; // file URL of the OpenCode plugin
   /** The Playwright MCP server, when the floor tests in a browser. Claude Code gets it through its MCP config file. */
   browser: { command: string; args: string[] } | null;
+  /**
+   * The office MCP server (the CEO's tools), for the CLIs that start their own: the bridge script, the office URL it
+   * dials and its environment. Claude Code gets the same tools from the office over its own MCP config file.
+   */
+  office: OfficeMcp | null;
+  /**
+   * OpenCode only: this install auto-approves permissions with --auto (2.x) rather than --dangerously-skip-permissions
+   * (1.x). Left out in tests and by any other caller: the flag that exists in both lines.
+   */
+  opencodeAuto?: boolean;
 }
 
 export interface Launch {
@@ -157,6 +216,49 @@ export interface Launch {
 }
 
 const EFFORT_CODEX: Record<EffortLevel, string> = { low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'xhigh' };
+
+/** The office MCP server as a CLI starts it: the bridge script, the office URL it dials, and the environment it needs. */
+export interface OfficeMcp {
+  command: string;
+  args: string[];
+  /**
+   * The SDK the bridge itself needs. It runs from the office's own folder, outside cubefarm, so `require` from there
+   * would not find cubefarm's node_modules: the office says where they are. '' when they can't be worked out.
+   */
+  nodePath: string;
+}
+
+/** The node_modules cubefarm's own dependencies are in, as the bridge (which sits elsewhere) should look them up. */
+export function officeMcpNodePath(resolve: (id: string) => string = (id) => createRequire(import.meta.url).resolve(id)): string {
+  try {
+    const pkg = resolve('@modelcontextprotocol/sdk/package.json');
+    // Either separator, rather than path.sep: tests on one platform describe paths of the other.
+    const rest = pkg.replaceAll('\\', '/');
+    const at = rest.lastIndexOf('/node_modules/');
+    return at < 0 ? '' : pkg.slice(0, at) + pkg.slice(at, at + '/node_modules'.length);
+  } catch {
+    return '';
+  }
+}
+
+/** What an MCP server the office launches needs in its environment: where to find the SDK, when that is known. */
+export function officeMcpEnv(nodePath: string): Record<string, string> {
+  return nodePath ? { NODE_PATH: nodePath } : {};
+}
+
+/**
+ * OpenCode's permissions. An agent can't stop to ask (the office runs it with --auto), so everything is allowed; the
+ * CEO is the exception: it reads repositories and acts through the office's tools, and never runs commands or edits
+ * files. OpenCode still enforces an explicit "deny" under --auto, so that holds whatever the model decides to try.
+ */
+export function opencodePermission(role: AgentRole): Record<string, string> {
+  return role === 'ceo' ? { bash: 'deny', edit: 'deny', webfetch: 'deny', websearch: 'deny' } : { edit: 'allow', bash: 'allow', webfetch: 'allow' };
+}
+
+/** The CEO's own tools, and only the CEO's: no worker ever reaches the office's issue-and-team tools. */
+function ceoOffice(ctx: LaunchContext): ctx is LaunchContext & { office: OfficeMcp } {
+  return ctx.role === 'ceo' && !!ctx.office;
+}
 
 /** Codex hooks the office listens to: its steps, and Esc interrupting a turn. Turn endings come from notify. */
 export const CODEX_HOOK_EVENTS = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Interrupt'];
@@ -215,6 +317,8 @@ export function launchArgs(id: AgentCli, ctx: LaunchContext): Launch {
         ...(ctx.model ? ['-m', ctx.model] : []),
         ...(ctx.effort ? ['-c', `model_reasoning_effort=${toml(EFFORT_CODEX[ctx.effort])}`] : []),
         ...(ctx.browser ? ['-c', `mcp_servers.playwright={command=${toml(ctx.browser.command)},args=[${ctx.browser.args.map(toml).join(',')}]}`] : []),
+        // The office's tools, bridged from stdio to the office's HTTP endpoint (OFFICE_MCP_SOURCE): the CEO's tools.
+        ...(ceoOffice(ctx) ? ['-c', `mcp_servers.office={command=${toml(ctx.office.command)},args=[${ctx.office.args.map(toml).join(',')}]}`] : []),
         ...CODEX_HOOK_EVENTS.flatMap((e) => ['-c', `hooks.${e}=[{hooks=[{type="command",command=${toml(codexHookCommand(process.execPath, ctx.codexHook))},timeout=10}]}]`]),
         // Like the manager's own Codex, but it can't stop to ask: no approvals and no sandbox (its sandbox can't reach
         // the credential store, so git and gh fail in it).
@@ -223,20 +327,30 @@ export function launchArgs(id: AgentCli, ctx: LaunchContext): Launch {
       return { args: ctx.resumeId ? ['resume', ...args, ctx.resumeId, ctx.prompt] : [...args, '--', ctx.prompt], env: { CUBEFARM_HOOK_URL: ctx.notify.url } };
     }
     case 'opencode': {
+      // The manager's own config is replaced wholesale (OPENCODE_CONFIG_CONTENT), so every server it should have is
+      // listed here; the office's 'office' server wins over one of the same name in their config.
+      const mcp: Record<string, unknown> = {};
+      if (ctx.browser) mcp.playwright = { type: 'local', command: [ctx.browser.command, ...ctx.browser.args], enabled: true };
+      if (ceoOffice(ctx)) mcp.office = { type: 'local', command: [ctx.office.command, ...ctx.office.args], enabled: true, environment: officeMcpEnv(ctx.office.nodePath) };
       const config = {
         plugin: [ctx.plugin],
         instructions: [ctx.files.system],
         autoupdate: false, // several agents starting at once must not each reinstall it
-        permission: { edit: 'allow', bash: 'allow', webfetch: 'allow' }, // it can't stop to ask either
-        ...(ctx.browser ? { mcp: { playwright: { type: 'local', command: [ctx.browser.command, ...ctx.browser.args], enabled: true } } } : {}),
+        permission: opencodePermission(ctx.role),
+        ...(Object.keys(mcp).length ? { mcp } : {}),
       };
+      // `run` takes the message and exits at the end of the turn, which is what the office wants from every session.
+      // The bare form is OpenCode's interactive TUI: it takes neither a message nor the model flag the office sends,
+      // and answers with its help text. `run` and the positional message are the same in 1.x and 2.x; only the flag
+      // that auto-approves permissions differs (2.x --auto, 1.x --dangerously-skip-permissions), so the office asks
+      // the CLI it found which line it is and sends that one — it also hands the office the CEO's MCP tools unasked.
       // No project argument: it starts in its terminal's folder, and a desk path in its command line would make the
       // desk clean-up take it for a leftover.
       const args = [
-        '--auto',
+        'run',
         ...(ctx.model ? ['--model', ctx.model] : []),
         ...(ctx.resumeId ? ['--session', ctx.resumeId] : []),
-        '--prompt',
+        ctx.opencodeAuto ? '--auto' : '--dangerously-skip-permissions',
         ctx.prompt,
       ];
       return { args, env: { OPENCODE_CONFIG_CONTENT: JSON.stringify(config), CUBEFARM_NOTIFY_URL: ctx.notify.url } };
@@ -395,4 +509,41 @@ export default async function CubefarmPlugin({ client } = {}) {
     },
   };
 }
+`;
+
+/**
+ * The office's MCP tools for the CLIs that start their own MCP servers (Codex, OpenCode): a small stdio MCP server that
+ * forwards every request to the office's HTTP endpoint, whose URL carries the session's token. Claude Code reaches the
+ * same tools directly through the office's own MCP server, so the CEO's tools are identical whichever it runs.
+ * Deployed as: node office-mcp.cjs <office mcp url>
+ */
+export const OFFICE_MCP_SOURCE = String.raw`// cubefarm: the office's tools (mcp__office__*) for a CLI that starts its own MCP servers.
+const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
+const { StreamableHTTPClientTransport } = require('@modelcontextprotocol/sdk/client/streamableHttp.js');
+const { Server } = require('@modelcontextprotocol/sdk/server/index.js');
+const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
+const { CallToolRequestSchema, ListToolsRequestSchema } = require('@modelcontextprotocol/sdk/types.js');
+
+async function main() {
+  const url = process.argv[2];
+  if (!url) throw new Error('the office URL is missing');
+  const office = new Client({ name: 'cubefarm-office', version: '1.0.0' }, { capabilities: {} });
+  try {
+    await office.connect(new StreamableHTTPClientTransport(new URL(url)));
+  } catch (err) {
+    throw new Error("the office isn't reachable at " + url.split('/api/')[0] + ' (' + (err && err.message ? err.message : err) + ')');
+  }
+  // The office's own tool list, passed through: no second copy of the schemas to drift out of date.
+  const bridge = new Server({ name: 'office', version: '1.0.0' }, { capabilities: { tools: {} } });
+  bridge.setRequestHandler(ListToolsRequestSchema, () => office.listTools());
+  bridge.setRequestHandler(CallToolRequestSchema, (req) => office.callTool(req.params));
+  bridge.onerror = () => {};
+  await bridge.connect(new StdioServerTransport());
+}
+
+main().catch((err) => {
+  // stderr is the agent's terminal; stdout is the protocol and must stay clean.
+  process.stderr.write('cubefarm: the office tools are not available: ' + (err && err.message ? err.message : err) + '\n');
+  process.exit(1);
+});
 `;

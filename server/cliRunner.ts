@@ -6,7 +6,7 @@ import type { Request, Response } from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { browserProblem, playwrightMcp } from './browser.ts';
 import { HOME_DIR } from './config.ts';
-import { cliLabel, CODEX_HOOK_SOURCE, codexThread, commandFor, hookReviewKey, interruptions, isCli, launchArgs, NOTIFY_SOURCE, OPENCODE_PLUGIN_SOURCE, STATUSLINE_SOURCE, trustKey } from './clis.ts';
+import { cliLabel, CODEX_HOOK_SOURCE, codexThread, commandFor, hookReviewKey, interruptions, isCli, launchArgs, NOTIFY_SOURCE, OFFICE_MCP_SOURCE, OPENCODE_PLUGIN_SOURCE, officeMcpNodePath, opencodeUsesAuto, STATUSLINE_SOURCE, trustKey } from './clis.ts';
 import { adoptPty, discardPty, hooksReady, keeperHookUrl, keeperPid, leaveKeeper, spawnPty, startKeeper, terminalsAvailable, type Pty } from './ptyClient.ts';
 import {
   clip,
@@ -99,7 +99,11 @@ export async function handleMcp(token: string, req: Request, res: Response) {
 
 let helpersWritten = false;
 
-/** The status line, notify and plugin scripts the CLIs run. Rewritten once per office start, so updates reach them. */
+/**
+ * The status line, notify and plugin scripts the CLIs run, and the MCP bridge. Written once per office start, so updates
+ * reach them. The bridge is plain CommonJS that needs the MCP SDK itself, so it lives beside the package's own
+ * node_modules: fine where the office runs from its folder (a checkout or one npm install), which is how it's run.
+ */
 function writeHelpers() {
   if (helpersWritten) return;
   fs.mkdirSync(BIN_DIR, { recursive: true });
@@ -107,6 +111,7 @@ function writeHelpers() {
   fs.writeFileSync(path.join(BIN_DIR, 'notify.cjs'), NOTIFY_SOURCE);
   fs.writeFileSync(path.join(BIN_DIR, 'codex-hook.cjs'), CODEX_HOOK_SOURCE);
   fs.writeFileSync(path.join(BIN_DIR, 'opencode-plugin.mjs'), OPENCODE_PLUGIN_SOURCE);
+  fs.writeFileSync(path.join(BIN_DIR, 'office-mcp.cjs'), OFFICE_MCP_SOURCE);
   helpersWritten = true;
 }
 
@@ -678,6 +683,14 @@ export function startCliSession(opts: SessionOptions, callbacks: SessionCallback
     codexHook: path.join(BIN_DIR, 'codex-hook.cjs'),
     plugin: pathToFileURL(path.join(BIN_DIR, 'opencode-plugin.mjs')).href,
     browser,
+    // The CEO's tools for a CLI that starts its own MCP servers; Claude Code has them from the office already (files.mcp).
+    // nodePath: the bridge runs from the office's folder, outside cubefarm, so it is told where the SDK lives.
+    office:
+      opts.office && cli !== 'claude'
+        ? { command: process.execPath, args: [path.join(BIN_DIR, 'office-mcp.cjs'), `${officeUrl}/api/mcp/${token}`], nodePath: officeMcpNodePath() }
+        : null,
+    // OpenCode's two lines disagree on the flag that auto-approves permissions; ask the CLI the office is about to run.
+    opencodeAuto: cli === 'opencode' ? opencodeUsesAuto(cmd.file) : false,
   });
 
   // Each agent must be a clean instance on the account its CLI is logged into: no API keys (they would switch Claude

@@ -185,6 +185,11 @@ export interface CliView {
   version: string | null;
   /** Hooks report every tool call and enforce the guard rails; the others report only when a turn ends. */
   integrated: boolean;
+  /**
+   * The models this CLI says it can run, for the model fields' suggestions (OpenCode lists its signed-in
+   * providers'). Empty when it can't be asked, or when only the office's own list is known.
+   */
+  models: string[];
 }
 
 /** Messages on an agent's terminal socket (/ws/term?agent=<id>), server to browser. */

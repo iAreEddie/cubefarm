@@ -55,6 +55,7 @@ import { cleanStyle, HAIR_COLORS, SKIN_TONES, type AgentStyle } from '../shared/
 import { achievementDef, type ProgressView } from '../shared/progress.ts';
 import { parsePongResult, PONG_PLAYER, recordGame } from '../shared/pong.ts';
 import { effectiveModel } from '../shared/models.ts';
+import { LEGACY_CEO_CLI, resolveCli } from '../shared/cli.ts';
 import { DEFAULT_WEATHER, DEFAULT_WORLD_EVENTS, weatherSettings, worldEventSettings } from '../shared/outside.ts';
 import { DEFAULT_THEME_SETTINGS, dueGreeting, themeSettings } from '../shared/themes.ts';
 import { CEO_ID, DEFAULT_DOG_NAME, DEFAULT_MAX_AGENTS, FLOOR_SEATS, INSTALL_STEP } from '../shared/types.ts';
@@ -296,7 +297,8 @@ const LOOKS: AgentLook[] = ['feminine', 'masculine'];
 // Every agent runs Claude Opus 5.5 at medium effort unless the manager overrides it.
 const DEFAULT_MODEL = 'claude-opus-5-5';
 const EFFORTS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
-// The CEO thinks harder than the staff: Opus 5.5 at xhigh effort unless the manager changes it.
+// The CEO thinks harder than the staff: Claude Code's Opus 5.5 at xhigh effort. The effort holds whichever coding
+// agent it runs; the model is only its own while it runs Claude Code (see modelFor).
 const CEO_MODEL = 'claude-opus-5-5';
 const CEO_EFFORT: EffortLevel = 'xhigh';
 const CEO_NAME = 'Morgan';
@@ -2083,7 +2085,7 @@ export class Swarm {
 
   updateAgent(id: string, patch: { name?: string; model?: string; effort?: string; cli?: string; look?: string; color?: string; hair?: string; style?: unknown }) {
     const a = this.agent(id);
-    if (patch.cli !== undefined && a.role !== 'ceo') {
+    if (patch.cli !== undefined) {
       const cli = isCli(patch.cli) ? patch.cli : '';
       if (cli && !this.cliReady(cli)) throw new HttpError(400, `${cliLabel(cli)} isn't installed on this computer.`);
       a.cli = cli;
@@ -2230,21 +2232,28 @@ export class Swarm {
 
   /**
    * How an agent's next session runs: the CLI in their terminal (the terminal runtime), or Claude Code through the
-   * SDK. A session can only be resumed by the CLI that made it, so a follow-up stays with that CLI.
+   * SDK. A session can only be resumed by the CLI that made it, so a follow-up stays with that CLI — except when their
+   * coding agent has been changed since: then the new one starts a session of its own, and the old CLI must not be
+   * dragged back to life for it (a CEO moved off Claude Code would otherwise keep hitting Claude's usage limit).
    */
   private sessionRuntime(a: PersistedAgent, resume?: string): { terminal?: AgentTerminal; cli?: AgentCli; label?: string; resumeSessionId?: string } {
     const inTerminal = this.state.settings.runtime === 'terminal' && this.backend.terminals;
-    let cli: AgentCli = a.role === 'ceo' ? 'claude' : a.cli || this.state.settings.defaultCli;
+    let cli: AgentCli = resolveCli(a, this.state.settings);
+    // A session from before the last coding-agent change belongs to the old CLI: start fresh instead of resuming it.
     if (resume && a.sessionCli && a.sessionCli !== cli) {
-      if (inTerminal) cli = a.sessionCli;
-      else if (a.sessionCli !== 'claude') resume = undefined;
+      resume = undefined;
+      a.sessionId = null;
+      a.sessionCli = null;
     }
     if (!inTerminal) return { resumeSessionId: resume };
     const what = a.role === 'ceo' ? a.issueTitle : a.task === 'qa' ? `QA · PR #${a.prNumber}` : a.task === 'fix' ? `fixing PR #${a.prNumber}` : a.issueNumber ? `#${a.issueNumber} ${a.issueTitle ?? ''}` : null;
     return { terminal: this.terminalFor(a), cli, label: `${a.name}${what ? ` · ${what}` : ''}`.slice(0, 80).trim(), resumeSessionId: resume };
   }
 
-  /** The model to ask for (the Agent SDK runs Claude Code). '' lets another coding agent use its own default. */
+  /**
+   * The model to ask for. Everyone's, the CEO included: their own when it suits the coding agent they run, else the
+   * office default, else Claude Code's own default. '' lets any other coding agent use its own default.
+   */
   private modelFor(a: PersistedAgent, cli: AgentCli | undefined) {
     return effectiveModel(a.model, cli ?? 'claude', this.state.settings, DEFAULT_MODEL);
   }
@@ -3675,9 +3684,11 @@ export class Swarm {
         hair: '#2b2118',
         skin: pick(SKIN),
         style: null,
-        model: CEO_MODEL,
+        model: '',
         effort: CEO_EFFORT,
-        cli: 'claude',
+        // '' = the office's default coding agent, as for every agent. The office used to pin the CEO to Claude Code
+        // and ignore this; the correction below clears what that left behind, so the CEO follows the default.
+        cli: '',
         machine: null,
         status: 'idle',
         issueNumber: null,
@@ -3704,6 +3715,25 @@ export class Swarm {
       a.status = 'idle';
       a.lastError = null;
       this.appendLog(a, [{ kind: 'system', text: '↺ The office server restarted. Picking the job back up.' }]);
+    }
+    const cli = resolveCli(a, this.state.settings);
+    // An office that pinned the CEO to Claude Code stored that as its coding agent and never read it back: clear it once
+    // so the CEO follows the office default like everyone else (a pick in the corner office's Setup still wins). Its
+    // stored chat came from that Claude Code; the next job starts a session of its own under the new coding agent.
+    if (a.role === 'ceo' && a.cli === LEGACY_CEO_CLI) {
+      a.cli = '';
+      if (a.model === CEO_MODEL) a.model = '';
+      a.sessionId = null;
+      a.sessionCli = null;
+      this.emitAgent(a);
+      this.save();
+    }
+    // A session made by a coding agent they no longer run can't be resumed (a chat included): start fresh instead, and
+    // forget the old one, so the next job doesn't hand it back to the CLI that can no longer run it.
+    if (a.sessionCli && a.sessionCli !== cli) {
+      a.sessionId = null;
+      a.sessionCli = null;
+      this.save();
     }
     if (this.state.ceo.job) {
       this.state.ceo.queue.unshift(this.state.ceo.job);
@@ -3819,7 +3849,7 @@ export class Swarm {
         cwd: CEO_DIR,
         prompt: ceoJobPrompt(job, floor, triage),
         systemAppend: ceoSystemPrompt(this.ceoPromptInput(a)),
-        model: a.model || CEO_MODEL,
+        model: this.modelFor(a, how.cli),
         effort: a.effort || CEO_EFFORT,
         browserTesting: false,
         additionalDirectories: this.state.repos.filter((r) => this.repoRt.get(r.id)?.cloneStatus === 'ready').map((r) => this.backend.mainDir(r.fullName)),
@@ -3836,7 +3866,7 @@ export class Swarm {
         },
         sessionId: (id) => {
           a.sessionId = id;
-          a.sessionCli = id ? 'claude' : null;
+          a.sessionCli = id ? (how.cli ?? 'claude') : null; // a follow-up stays with the CLI that made the session
         },
         browserUrl: () => undefined,
         screenshot: () => undefined,
@@ -4810,12 +4840,11 @@ export class Swarm {
 
   /** What an agent runs, defaults resolved, for the CEO. */
   private agentSetup(a: PersistedAgent) {
-    const ceo = a.role === 'ceo';
-    const cli = ceo ? 'claude' : a.cli || this.state.settings.defaultCli;
+    const cli = resolveCli(a, this.state.settings);
     return {
       codingAgent: cli,
-      model: ceo ? a.model || CEO_MODEL : this.modelFor(a, cli) || 'the coding agent default',
-      effort: a.effort || (ceo ? CEO_EFFORT : this.state.settings.defaultEffort),
+      model: this.modelFor(a, cli) || 'the coding agent default',
+      effort: a.effort || (a.role === 'ceo' ? CEO_EFFORT : this.state.settings.defaultEffort),
     };
   }
 

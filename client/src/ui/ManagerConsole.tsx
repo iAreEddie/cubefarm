@@ -5,6 +5,7 @@ import { PreviewPill, PreviewSettings } from './AppViewer';
 import { agentsOnRepo, pendingRequests, useStore, type ManagerTab } from '../store';
 import { CEO_ID, DEFAULT_MAX_AGENTS, FLOOR_SEATS, type AgentCli, type EffortLevel, type OfficeUpdateView, type RepoView } from '../../../shared/types';
 import { CLAUDE_MODELS, modelSuggestions } from '../../../shared/models';
+import { SDK_CLI } from '../../../shared/cli';
 import { CliOptions, CliSelect, cliName, EFFORTS, EffortSelect, LookEditor, LookSelect, ModelInput, NameInput, PromptPreview } from './AgentSettings';
 import { canPostpone, canUpdateNow, drainDeadline, officeUpdateText } from '../officeUpdate';
 import { confirmDialog } from './Confirm';
@@ -404,7 +405,7 @@ function AddAgent({ repo, size }: { repo: RepoView; size: number }) {
       )}
       <input value={draft.model} onChange={(e) => edit({ model: e.target.value })} list={`new-agent-models-${repo.floor}`} placeholder="default model" aria-label="New agent's model" style={{ maxWidth: 150 }} />
       <datalist id={`new-agent-models-${repo.floor}`}>
-        {modelSuggestions(cli).map((m) => (
+        {modelSuggestions(cli, clis, settings.defaultModel).map((m) => (
           <option key={m} value={m} />
         ))}
       </datalist>
@@ -610,7 +611,7 @@ function SettingsTab() {
   const commit = useStore((s) => s.officeCommit);
   const set = (p: Parameters<typeof api.updateSettings>[0]) => void attempt(() => api.updateSettings(p));
   const terminal = settings.runtime === 'terminal';
-  const defaultCli = terminal ? settings.defaultCli : 'claude';
+  const defaultCli = terminal ? settings.defaultCli : SDK_CLI;
   return (
     <div className="tab-grid">
       <div className="card">
@@ -650,7 +651,7 @@ function SettingsTab() {
         </label>
         <p className="muted small">
           {terminal
-            ? 'Each agent can use their own coding agent, model and effort (Team tab); the CEO always runs Claude Code. Claude Code reports every step; Codex and OpenCode are experimental: the office sees their task rather than each step.'
+            ? 'Each agent can use their own coding agent, model and effort (Team tab), the CEO included: unless you pick one for it, the CEO runs this default. Claude Code reports every step and gets the office tools from the office itself; Codex and OpenCode are experimental: the office sees their task rather than each step, and only the CEO gets the office tools.'
             : 'The Agent SDK runs Claude Code. Each agent can use their own model and effort (Team tab).'}
         </p>
         <label className="field">

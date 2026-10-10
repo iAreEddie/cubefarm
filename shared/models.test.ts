@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { effectiveModel, isClaudeModel, modelSuggestions } from './models.ts';
+import type { CliView } from './types.ts';
 
 const claudeOffice = { defaultCli: 'claude' as const, defaultModel: 'claude-sonnet-5' };
 const codexOffice = { defaultCli: 'codex' as const, defaultModel: 'gpt-5.5-codex' };
@@ -30,11 +31,33 @@ describe('effectiveModel', () => {
 });
 
 describe('modelSuggestions', () => {
+  const cli = (id: CliView['id'], models: string[]): CliView => ({ id, label: id, installed: true, version: 'x', integrated: id === 'claude', models });
+
   it('only suggests models the chosen coding agent understands', () => {
     expect(modelSuggestions('claude').every(isClaudeModel)).toBe(true);
     for (const cli of ['codex', 'opencode'] as const) {
       expect(modelSuggestions(cli).length).toBeGreaterThan(0);
       expect(modelSuggestions(cli).some(isClaudeModel)).toBe(false);
     }
+  });
+
+  it('offers what the coding agent says it can run, instead of the office guessing', () => {
+    // OpenCode answers `models` with every model of the providers it is signed in to, so a DeepSeek-only machine
+    // offers DeepSeek's (and, before this, offered Anthropic names it could not run at all).
+    const clis: CliView[] = [cli('opencode', ['ollama/gemma4:e4b', 'deepseek/deepseek-v4-pro', 'deepseek/deepseek-flash'])];
+    expect(modelSuggestions('opencode', clis, 'deepseek/deepseek-flash')).toEqual([
+      'deepseek/deepseek-flash', // the office's own model first
+      'deepseek/deepseek-v4-pro', // then its provider's
+      'ollama/gemma4:e4b',
+    ]);
+    // Codex cannot be asked (it validates --model itself), so its own list stands, gpt-6.1-sol included.
+    expect(modelSuggestions('codex', clis)).toContain('gpt-6.1-sol');
+    // An agent on a CLI that answered nothing keeps the office's list.
+    expect(modelSuggestions('claude', clis).every(isClaudeModel)).toBe(true);
+  });
+
+  it('keeps every model the CLI reported, however many', () => {
+    const many = Array.from({ length: 40 }, (_, i) => `deepseek/model-${i}`);
+    expect(modelSuggestions('opencode', [cli('opencode', many)], 'deepseek/model-7')).toHaveLength(40);
   });
 });
