@@ -20,6 +20,14 @@ visit. Five tabs, at the bottom:
 Pocket mode uses the same live connection and commands as the 3D office, and loads no 3D at all until you tap
 **🏢 Open the 3D office** (Company tab, or ⚙️).
 
+### File paths in messages
+
+A file or folder named in a message (`C:\…`, `/home/…`, a `file://` link) is a 📂 link. On the PC it shows the item
+selected in File Explorer (Finder, or the folder in your file manager on Linux). On a phone, tapping it offers
+**🖥 Show on PC** and, for `.md`, `.txt` and `.log` files, **📖 Read here**: a read-only view of the file. Only paths
+in the office's own folders work (its home folder, the agents' machines and the floors' checkouts); nothing is ever
+opened or run, and the viewer never shows the office's secrets or state files.
+
 ## Install it
 
 The office is an installable web app: Chrome and Edge offer **Install** in the address bar (on Android: ⋮ → **Add
