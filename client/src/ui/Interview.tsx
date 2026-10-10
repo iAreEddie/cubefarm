@@ -6,6 +6,7 @@ import { Markdown } from './Markdown';
 import { closeOverlay } from './Panel';
 import { HireSetupFields, cliLabel, hireCli, hireOverrides, setupOf, type HireSetup } from './Phone';
 import { CLAUDE_MODELS, effectiveModel } from '../../../shared/models';
+import { TAKES_LABEL } from '../../../shared/takes';
 
 // A team change face to face (#227), as an office document: a new agent waiting in the lobby (E on them, world/
 // Candidates.tsx), set up here before they're created (name, coding agent, model, effort), or the CEO's let-go note in
@@ -109,6 +110,8 @@ export function Interview({ requestId }: { requestId: string }) {
             <dd>{effectiveModel(req.model, cli, settings, CLAUDE_MODELS[0]) || 'its default model'}</dd>
             <dt>Effort</dt>
             <dd>{req.effort || settings.defaultEffort}</dd>
+            <dt>Takes</dt>
+            <dd>{TAKES_LABEL[req.takes ?? 'any']}</dd>
           </dl>
         )}
         {pending ? (

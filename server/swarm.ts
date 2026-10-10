@@ -11,7 +11,7 @@ import { afterClose, ASK_AGAIN_MS, closedWhy, closuresHeld, forgettable, issueOp
 import { depsPromptLine, type DepsOutcome } from './deps.ts';
 import { setUpDesk } from './deskSetup.ts';
 import { fixOutcome, MAX_FIX_FAILURES } from './fixOutcome.ts';
-import { fixGoesTo, pickTester, PREP_HOLD_MS, prepFailure, prepHeld, type PrepStrikes } from './handOut.ts';
+import { fixer, fixGoesTo, pickTester, PREP_HOLD_MS, prepFailure, prepHeld, type PrepStrikes } from './handOut.ts';
 import { HttpError } from './httpError.ts';
 import { IssueAges } from './issueAges.ts';
 import { issuesResolvedBy, issueTaken } from './issueClaims.ts';
@@ -52,6 +52,7 @@ import { WeatherService } from './weather.ts';
 import { blockers, holdUps, waitsMessage } from '../shared/issues.ts';
 import { dayKey, journalFrame, legacyAgent, legacyRequest } from '../shared/journal.ts';
 import { cleanStyle, HAIR_COLORS, SKIN_TONES, type AgentStyle } from '../shared/looks.ts';
+import { canBuild, canQa, gapsText, isTakes, TAKES, TAKES_LABEL, takesGaps, type AgentTakes } from '../shared/takes.ts';
 import { achievementDef, type ProgressView } from '../shared/progress.ts';
 import { parsePongResult, PONG_PLAYER, recordGame } from '../shared/pong.ts';
 import { effectiveModel } from '../shared/models.ts';
@@ -132,6 +133,7 @@ interface PersistedAgent {
   model: string;
   effort: EffortLevel | '';
   cli: AgentCli | ''; // '' = the office's default CLI
+  takes: AgentTakes; // what work they're handed (shared/takes.ts)
   machine: string | null; // their machine (machines.ts); null for an agent from before machines, until their next task
   status: AgentStatus;
   issueNumber: number | null;
@@ -636,6 +638,7 @@ export class Swarm {
           style: cleanStyle(a.style),
           task: a.task ?? (a.issueNumber ? 'issue' : null),
           cli: isCli(a.cli) ? a.cli : '',
+          takes: isTakes(a.takes) ? a.takes : 'any',
           sessionCli: a.sessionCli ?? (a.sessionId ? 'claude' : null),
         })),
         qa: (loaded.qa ?? []).map((q) => ({
@@ -658,7 +661,7 @@ export class Swarm {
           escalated: q.escalated ?? q.status === 'needs-human', // stuck before triage existed: the manager was told
           mergeNote: null,
         })),
-        requests: (loaded.requests ?? []).map((raw) => legacyRequest<HireRequestView>(raw)),
+        requests: (loaded.requests ?? []).map((raw) => legacyRequest<HireRequestView>(raw)).map((r) => ({ ...r, takes: isTakes(r.takes) ? r.takes : 'any' })),
         ceo: { ...this.state.ceo, ...loaded.ceo },
         messages: loaded.messages ?? [],
         phoneReadAt: loaded.phoneReadAt ?? 0,
@@ -974,6 +977,7 @@ export class Swarm {
       model: a.model,
       effort: a.effort,
       cli: a.cli,
+      takes: a.takes,
       terminal: !!rt.terminal,
       status: a.status,
       issueNumber: a.issueNumber,
@@ -2006,6 +2010,7 @@ export class Swarm {
       effort?: string;
       look?: string;
       cli?: string;
+      takes?: string;
       appearance?: { color: string; hair: string; skin: string };
       /** Their id, when it's known before they're hired (a team change's): their look is seeded from it. */
       id?: string;
@@ -2038,6 +2043,7 @@ export class Swarm {
       model: opts.model ?? '',
       effort: EFFORTS.includes(opts.effort as EffortLevel) ? (opts.effort as EffortLevel) : '',
       cli,
+      takes: isTakes(opts.takes) ? opts.takes : 'any',
       machine: machineName(id),
       status: 'idle',
       issueNumber: null,
@@ -2081,8 +2087,13 @@ export class Swarm {
     return !this.clis.length || this.clis.some((c) => c.id === cli && c.installed);
   }
 
-  updateAgent(id: string, patch: { name?: string; model?: string; effort?: string; cli?: string; look?: string; color?: string; hair?: string; style?: unknown }) {
+  updateAgent(id: string, patch: { name?: string; model?: string; effort?: string; cli?: string; takes?: string; look?: string; color?: string; hair?: string; style?: unknown }) {
     const a = this.agent(id);
+    if (patch.takes !== undefined && a.role !== 'ceo') {
+      if (!isTakes(patch.takes)) throw new HttpError(400, `takes must be one of ${TAKES.join(', ')}`);
+      a.takes = patch.takes;
+      setTimeout(() => this.schedule(), 200);
+    }
     if (patch.cli !== undefined && a.role !== 'ceo') {
       const cli = isCli(patch.cli) ? patch.cli : '';
       if (cli && !this.cliReady(cli)) throw new HttpError(400, `${cliLabel(cli)} isn't installed on this computer.`);
@@ -2202,6 +2213,7 @@ export class Swarm {
     const a = this.agent(agentId);
     const repo = this.repo(a.repoId);
     if (a.role === 'ceo') throw new HttpError(400, `${a.name} runs the company; give issues to the agents on the floors.`);
+    if (!canBuild(a.takes)) throw new HttpError(409, `${a.name} takes QA only. Change their Takes (⚙️ Setup) to give them issues.`);
     if (BUSY.includes(a.status)) throw new HttpError(409, `${a.name} is busy: ${this.agentDoing(a)}`);
     this.ensureSlot();
     const issues = this.repoRt.get(repo.id)?.issues ?? [];
@@ -2706,6 +2718,7 @@ export class Swarm {
     const dev = this.state.agents.find((a) => a.repoId === repo.id && a.role !== 'ceo' && a.task !== 'qa' && (a.prNumber === prNumber || a.branch === pr.headRefName));
     const tester = agentId ? this.agent(agentId) : null;
     if (tester && (tester.repoId !== repo.id || tester.role === 'ceo')) throw new HttpError(400, `${tester.name} doesn't work on ${repo.fullName}`);
+    if (tester && !canQa(tester.takes)) throw new HttpError(409, `${tester.name} takes building and fixes only. Change their Takes (⚙️ Setup) to have them test.`);
     if (tester && BUSY.includes(tester.status)) throw new HttpError(409, `${tester.name} is busy: ${this.agentDoing(tester)}`);
     if (tester) this.ensureSlot();
     this.clearPrepStrikes(repo.id, prNumber);
@@ -3312,7 +3325,7 @@ export class Swarm {
     const fixes = waiting('failed', 'fix');
     const owed = new Set(fixes.map((q) => q.devAgentId).filter((id): id is string => !!id));
     for (const rec of waiting('queued', 'qa')) {
-      const othersCan = this.state.agents.some((a) => a.repoId === repo.id && a.role !== 'ceo' && a.id !== rec.devAgentId && a.status !== 'stopped');
+      const othersCan = this.state.agents.some((a) => a.repoId === repo.id && a.role !== 'ceo' && a.id !== rec.devAgentId && a.status !== 'stopped' && canQa(a.takes));
       const tester = pickTester(free, rec.devAgentId, owed, othersCan, now - rec.updatedAt);
       if (!tester) continue;
       void this.runQa(tester, repo, rec);
@@ -3323,7 +3336,9 @@ export class Swarm {
       const headRef = this.repoRt.get(repo.id)!.pulls.find((p) => p.number === rec.prNumber)?.headRefName ?? null;
       const to = fixGoesTo(author, !!author && free.includes(author), rec.prNumber, headRef);
       if (to === 'wait') continue; // the author gets it when their session ends
-      void this.runFix(to === 'author' ? author! : (free.find((a) => !owed.has(a.id)) ?? free[0]), repo, rec);
+      const dev = to === 'author' ? author! : fixer(free, owed);
+      if (!dev) continue; // nobody free who builds
+      void this.runFix(dev, repo, rec);
       return true;
     }
     return false;
@@ -3335,7 +3350,7 @@ export class Swarm {
    */
   private startIssueWork(repo: PersistedRepo): boolean {
     if (!repo.autoAssign || !this.mayStart('issue')) return false;
-    const agent = this.available(repo)[0];
+    const agent = this.available(repo).find((a) => canBuild(a.takes));
     const next = agent ? this.readyIssues(repo)[0] : undefined;
     if (!agent || !next) return false;
     // assign() flips the agent to 'preparing' synchronously, so the next pass sees it as busy.
@@ -3442,11 +3457,17 @@ export class Swarm {
     if (recordMerges(this.state.ops, repo.id, pulls, now) + recordChecks(this.state.ops, repo.id, pulls, now) > 0) this.save();
   }
 
+  private teamGapSince = new Map<string, number>(); // repoId → when its agents' Takes left it unable to build or test
+
   /** Every floor as mission control sees it now. */
   private opsNow(): OpsView {
     const floors: OpsFloorState[] = this.state.repos.map((r) => {
       const rt = this.repoRt.get(r.id);
+      const gap = takesGaps(this.state.agents.filter((a) => a.repoId === r.id && a.role !== 'ceo'));
+      if (!gap.noBuild && !gap.noQa) this.teamGapSince.delete(r.id);
+      else if (!this.teamGapSince.has(r.id)) this.teamGapSince.set(r.id, Date.now());
       return {
+        teamGapSince: this.teamGapSince.get(r.id),
         repoId: r.id,
         floor: r.floor,
         ready: rt?.lastSync ? this.readyIssues(r).length : 0,
@@ -3678,6 +3699,7 @@ export class Swarm {
         model: CEO_MODEL,
         effort: CEO_EFFORT,
         cli: 'claude',
+        takes: 'any',
         machine: null,
         status: 'idle',
         issueNumber: null,
@@ -4583,12 +4605,12 @@ export class Swarm {
   }
 
   /** "Codex · gpt-6 · high": what an agent runs, where it isn't the office default ('' when it all is). */
-  private setupLabel(x: { cli: AgentCli | ''; model: string; effort: EffortLevel | '' }) {
-    return [x.cli ? cliLabel(x.cli) : '', x.model, x.effort ? `${x.effort} effort` : ''].filter(Boolean).join(' · ');
+  private setupLabel(x: { cli: AgentCli | ''; model: string; effort: EffortLevel | ''; takes?: AgentTakes }) {
+    return [x.cli ? cliLabel(x.cli) : '', x.model, x.effort ? `${x.effort} effort` : '', x.takes === 'qa' ? 'QA only' : x.takes === 'build' ? 'building and fixes only' : ''].filter(Boolean).join(' · ');
   }
 
   /** A team change goes through: the new agent joins as set up here (the manager's changes win), or an agent leaves. */
-  approveRequest(id: string, overrides: { name?: string; cli?: string; model?: string; effort?: string; note?: string } = {}, by: 'manager' | 'auto' = 'manager') {
+  approveRequest(id: string, overrides: { name?: string; cli?: string; model?: string; effort?: string; takes?: string; note?: string } = {}, by: 'manager' | 'auto' = 'manager') {
     const req = this.state.requests.find((r) => r.id === id);
     if (!req) throw new HttpError(404, 'That team change no longer exists');
     if (req.status !== 'pending') throw new HttpError(409, `That team change was already ${req.status}`);
@@ -4603,12 +4625,13 @@ export class Swarm {
         cli: overrides.cli ?? req.cli,
         model: overrides.model ?? req.model,
         effort: overrides.effort ?? req.effort,
+        takes: overrides.takes ?? req.takes,
         look: name === req.name ? req.look : undefined,
         appearance: { color: req.color, hair: req.hair, skin: req.skin },
         // the request's id: the candidate waiting in the lobby was drawn from it, so they look the same at their desk
         id: req.id,
       });
-      Object.assign(req, { agentId: agent.id, name: agent.name, cli: agent.cli, model: agent.model, effort: agent.effort });
+      Object.assign(req, { agentId: agent.id, name: agent.name, cli: agent.cli, model: agent.model, effort: agent.effort, takes: agent.takes });
       this.decide(req, { status: 'approved', note, decidedBy: by });
       const setup = this.setupLabel(req);
       this.postMessage('office', by === 'auto' ? `🤖 ${agent.name} joined floor ${repo.floor}${setup ? ` (${setup})` : ''}.` : `✅ You hired ${agent.name} for floor ${repo.floor}${setup ? ` (${setup})` : ''}.${quoted}`, req.id);
@@ -4669,7 +4692,7 @@ export class Swarm {
     };
   }
 
-  private newHire(repo: PersistedRepo, reason: string, setup: Pick<HireRequestView, 'cli' | 'model' | 'effort'>): HireRequestView {
+  private newHire(repo: PersistedRepo, reason: string, setup: Pick<HireRequestView, 'cli' | 'model' | 'effort' | 'takes'>): HireRequestView {
     const name = this.freeName();
     const req: HireRequestView = {
       id: crypto.randomUUID(),
@@ -4704,6 +4727,7 @@ export class Swarm {
       cli: a.cli,
       model: a.model,
       effort: a.effort,
+      takes: a.takes,
       look: a.look,
       color: a.color,
       hair: a.hair,
@@ -4723,7 +4747,7 @@ export class Swarm {
    * let-gos are envelopes on desks until the manager decides; on auto, they go through at once, bar busy agents, who
    * leave when their task is over (leaveIfDue).
    */
-  private scaleTeam(x: { floor: number; size: number; reason: string; cli?: string; model?: string; effort?: string }) {
+  private scaleTeam(x: { floor: number; size: number; reason: string; cli?: string; model?: string; effort?: string; takes?: string }) {
     const repo = this.floorRepo(x.floor);
     const reason = String(x.reason ?? '').trim().slice(0, 600);
     if (!reason) throw new Error('Say why: the manager reads the reason.');
@@ -4739,7 +4763,12 @@ export class Swarm {
       const req = this.state.requests.find((r) => r.id === id);
       if (req) this.decide(req, { status: 'rejected', note: `${this.ceo().name} changed the plan.`, decidedBy: 'auto' });
     }
-    const setup = { cli, model: String(x.model ?? '').trim(), effort: EFFORTS.includes(x.effort as EffortLevel) ? (x.effort as EffortLevel) : ('' as const) };
+    const setup = {
+      cli,
+      model: String(x.model ?? '').trim(),
+      effort: EFFORTS.includes(x.effort as EffortLevel) ? (x.effort as EffortLevel) : ('' as const),
+      takes: isTakes(x.takes) ? x.takes : ('any' as const),
+    };
     const made = [...Array.from({ length: plan.hire }, () => this.newHire(repo, reason, setup)), ...plan.letGo.map((id) => this.newLetGo(this.agent(id), reason))];
     const capped = Number(x.size) > max ? ` (you asked for ${x.size}; its most is ${max})` : '';
     const names = (reqs: HireRequestView[]) => nameList(reqs.map((r) => r.name));
@@ -4816,6 +4845,7 @@ export class Swarm {
       codingAgent: cli,
       model: ceo ? a.model || CEO_MODEL : this.modelFor(a, cli) || 'the coding agent default',
       effort: a.effort || (ceo ? CEO_EFFORT : this.state.settings.defaultEffort),
+      ...(ceo ? {} : { takes: TAKES_LABEL[a.takes] }),
     };
   }
 
@@ -4842,7 +4872,14 @@ export class Swarm {
           autoAssign: r.autoAssign,
           autoMerge: r.autoMerge,
           folderSync: rt.folderSync,
-          team: { size: team.agents.length, max: s.maxAgents, free: this.available(r).length, pendingHires: team.pendingHires.length, pendingLetGos: team.pendingLetGos.length },
+          team: {
+            size: team.agents.length,
+            max: s.maxAgents,
+            free: this.available(r).length,
+            pendingHires: team.pendingHires.length,
+            pendingLetGos: team.pendingLetGos.length,
+            ...this.gapsNote(r),
+          },
           throughput: {
             mergedLastHour: nums?.mergedHour ?? 0,
             mergedToday: nums?.mergedToday ?? 0,
@@ -4937,12 +4974,19 @@ export class Swarm {
     return `Saved floor ${r.floor}'s profile.`;
   }
 
-  /** configure_agent: an agent's coding agent, model or effort, from their next task. */
-  private configureAgent(x: { agent_id: string; cli?: string; model?: string; effort?: string }) {
+  /** A floor's team that can't build or can't test, for company_status (nothing when it can do both). */
+  private gapsNote(r: PersistedRepo) {
+    const text = gapsText(takesGaps(this.state.agents.filter((a) => a.repoId === r.id && a.role !== 'ceo')));
+    return text ? { warning: text } : {};
+  }
+
+  /** configure_agent: an agent's coding agent, model, effort or what work they take, from their next task. */
+  private configureAgent(x: { agent_id: string; cli?: string; model?: string; effort?: string; takes?: string }) {
     const a = this.agentByRef(x.agent_id);
     if (a.role === 'ceo') throw new Error("That's you: the manager sets the CEO up.");
-    if (x.cli === undefined && x.model === undefined && x.effort === undefined) throw new Error('Nothing to change: pass cli, model, effort or a mix.');
-    this.updateAgent(a.id, { cli: x.cli, model: x.model, effort: x.effort });
+    if (x.cli === undefined && x.model === undefined && x.effort === undefined && x.takes === undefined) throw new Error('Nothing to change: pass cli, model, effort, takes or a mix.');
+    if (x.takes !== undefined && !isTakes(x.takes)) throw new Error(`takes must be one of ${TAKES.join(', ')}.`);
+    this.updateAgent(a.id, { cli: x.cli, model: x.model, effort: x.effort, takes: x.takes });
     const setup = this.setupLabel(a) || 'the office defaults';
     this.appendLog(a, [{ kind: 'system', text: `⚙️ ${this.ceo().name} set ${a.name} up with ${setup}.` }]);
     return `${a.name} runs ${setup} from their next task.`;

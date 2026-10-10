@@ -239,7 +239,7 @@ export function describeOfficeTool(action: string, input: Record<string, unknown
     case 'scale_team':
       return `📈 scale_team floor ${String(input.floor ?? '?')} → ${String(input.size ?? '?')}${input.reason ? `: ${clip(String(input.reason), 90)}` : ''}`;
     case 'configure_agent': {
-      const set = [input.cli, input.model, input.effort].filter((x) => typeof x === 'string' && x !== '');
+      const set = [input.cli, input.model, input.effort, input.takes].filter((x) => typeof x === 'string' && x !== '');
       return `⚙️ configure_agent ${String(input.agent_id ?? '')}${set.length ? `: ${set.join(' · ')}` : ''}`;
     }
     case 'file_issue':

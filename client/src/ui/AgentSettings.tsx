@@ -7,8 +7,9 @@ import { CLAUDE_MODELS, effectiveModel, modelSuggestions } from '../../../shared
 import { TALL_HAIR, appearanceFor, randomStyle } from '../world/appearance';
 import { LookPreview } from '../world/LookPreview';
 import { workerCli } from './floorRows';
+import { TakesSelect } from './Takes';
 
-// One agent's setup (name, look, coding agent, model, effort), edited in place: the Team tab's row cells and the
+// One agent's setup (name, look, coding agent, model, effort, takes), edited in place: the Team tab's row cells and the
 // ⚙️ Setup section of their panel share these. Every change is a PATCH; the `agent` event updates all views.
 
 export const EFFORTS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
@@ -321,6 +322,12 @@ export function AgentSetup({ agent }: { agent: Agent }) {
           <span>Effort</span>
           <EffortSelect agent={agent} id={`${id}-effort`} />
         </label>
+        {!ceo && (
+          <label className="field" htmlFor={`${id}-takes`}>
+            <span>Takes</span>
+            <TakesSelect agent={agent} id={`${id}-takes`} />
+          </label>
+        )}
       </div>
       <LookEditor agent={agent} />
       <PromptPreview agent={agent} />

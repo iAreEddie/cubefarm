@@ -194,6 +194,13 @@ describe('alarms', () => {
     expect(v.floors.map((x) => x.alarms)).toEqual([2, 1]);
   });
 
+  it("rings while a floor's Takes leave nobody to test or build (#2)", () => {
+    const f = floor({ agents: [agent({ id: 'a1', takes: 'build' }), agent({ id: 'a2', takes: 'build' })], teamGapSince: NOW - MIN });
+    expect(floorAlarms(f, NOW)).toEqual([{ id: 'team:o/a', kind: 'team', repoId: 'o/a', floor: 1, prNumber: null, agentId: null, text: 'Nobody on this floor can test', since: NOW - MIN }]);
+    expect(floorAlarms(floor({ agents: [agent({ takes: 'qa' })] }), NOW).map((a) => a.text)).toEqual(['Nobody on this floor builds']);
+    expect(floorAlarms(floor({ agents: [agent({ takes: 'build' }), agent({})] }), NOW)).toEqual([]);
+  });
+
   it('stops once handled', () => {
     const f = floor({ agents: [agent({ status: 'working', endedAt: NOW - DAY_MS })], prs: [pr(7, 'queued')] });
     expect(floorAlarms(f, NOW)).toEqual([]);

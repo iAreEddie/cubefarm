@@ -1062,7 +1062,8 @@ export interface DemoFloor {
   floor: number;
   repo: string;
   brief: string | null;
-  team: { size: number; max: number; free: number; pendingHires: number; pendingLetGos: number };
+  team: { size: number; max: number; free: number; pendingHires: number; pendingLetGos: number; warning?: string };
+  agents?: { id: string; name: string; takes?: string }[];
   capacity: { issuesReadyToStart: number; prsAwaitingQa: number };
   backlog: { number: number; title: string; inProgress: boolean }[];
   pullRequests: unknown[];
@@ -1204,6 +1205,8 @@ function ceoSession(opts: SessionOptions, cb: SessionCallbacks): SessionHandle {
     async review() {
       const s = await status();
       await think('Checking each floor for work waiting on free agents, and agents waiting on work.');
+      const stuck = s.floors.find((f) => f.team.warning);
+      if (stuck) return `Floor ${stuck.floor} needs you: ${stuck.team.warning}`;
       for (const f of s.floors) {
         const call = demoShrink(f) ?? demoGrow(f, f.capacity.issuesReadyToStart);
         if (call) return scale(s, f, call);
@@ -1241,6 +1244,14 @@ function ceoSession(opts: SessionOptions, cb: SessionCallbacks): SessionHandle {
         const reason = close[2].trim() || 'No longer wanted.';
         const out = await use('close_issue', { floor: closeFloor.floor, number: Number(close[1]), reason });
         return out.startsWith('Refused') ? `I couldn't close #${close[1]}: ${refused(out)}` : `Done: ${out} I left "${short(reason, 80)}" on it as a comment.`;
+      }
+      // "make Ada QA only" (or "building only", "anything"): their Takes, through the real configure_agent.
+      const takes = text.match(/\b(qa[- ]only|build(?:ing)?(?: and fixes)?(?:[- ]only)?|anything)\b/i)?.[1].toLowerCase();
+      const named = takes ? s.floors.flatMap((f) => f.agents ?? []).find((a) => text.toLowerCase().includes(a.name.toLowerCase())) : undefined;
+      if (takes && named) {
+        const value = takes.startsWith('qa') ? 'qa' : takes.startsWith('build') ? 'build' : 'any';
+        const out = await use('configure_agent', { agent_id: named.id, takes: value });
+        return out.startsWith('Refused') ? `I couldn't change ${named.name}: ${refused(out)}` : `Done: ${out}`;
       }
       // Asked for a bigger team: one more agent where the most work waits, through the real tool.
       if (/\b(hire|hiring|grow|team|bigger)\b/i.test(text)) {

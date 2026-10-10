@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fixGoesTo, pickTester, PREP_HOLD_MS, prepFailure, prepHeld, SELF_QA_WAIT_MS, type FixAuthor } from './handOut.ts';
+import { fixer, fixGoesTo, pickTester, PREP_HOLD_MS, prepFailure, prepHeld, SELF_QA_WAIT_MS, type FixAuthor } from './handOut.ts';
 
 const author = (o: Partial<FixAuthor> = {}): FixAuthor => ({ status: 'done', branch: 'swarm/issue-192-barbara', prNumber: 198, ...o });
 const HEAD = 'swarm/issue-192-barbara';
@@ -15,6 +15,12 @@ describe('fixGoesTo', () => {
   it('goes to the author when they are free', () => {
     expect(fixGoesTo(author(), true, 198, HEAD)).toBe('author');
     expect(fixGoesTo(author({ status: 'error' }), true, 198, HEAD)).toBe('author'); // their cooldown is over
+  });
+
+  it('goes to another builder when the author takes QA only (#2)', () => {
+    expect(fixGoesTo(author({ takes: 'qa' }), true, 198, HEAD)).toBe('anyone');
+    expect(fixGoesTo(author({ takes: 'qa', status: 'working', prNumber: 198 }), false, 198, HEAD)).toBe('anyone');
+    expect(fixGoesTo(author({ takes: 'build' }), true, 198, HEAD)).toBe('author');
   });
 
   it('goes to anyone free when the author is gone, errored or busy with other work', () => {
@@ -94,5 +100,28 @@ describe('pickTester', () => {
 
   it('has nobody to pick from an empty floor', () => {
     expect(pickTester([], 'ada', new Set(), false, SELF_QA_WAIT_MS)).toBeNull();
+  });
+
+  it('never picks a build-only agent (#2)', () => {
+    const builder = { ...linus, takes: 'build' as const };
+    const tester = { ...grace, takes: 'qa' as const };
+    expect(pickTester([ada, builder, tester], 'ada', new Set(), true, 0)).toBe(tester);
+    expect(pickTester([ada, builder], 'ada', new Set(), true, 0)).toBeNull();
+    // nor tests their own PR when set to building, however long it waited
+    expect(pickTester([{ ...ada, takes: 'build' as const }], 'ada', new Set(), false, SELF_QA_WAIT_MS)).toBeNull();
+    // a QA-only agent is tested before anyone owed a fix
+    expect(pickTester([ada, linus, tester], 'ada', new Set(['linus']), true, 0)).toBe(tester);
+  });
+});
+
+describe('fixer', () => {
+  it('picks a free builder, those owed their own fixes last, never a QA-only agent (#2)', () => {
+    const ada = { id: 'ada' };
+    const linus = { id: 'linus', takes: 'qa' as const };
+    const grace = { id: 'grace', takes: 'build' as const };
+    expect(fixer([ada, linus, grace], new Set())).toBe(ada);
+    expect(fixer([ada, linus, grace], new Set(['ada']))).toBe(grace);
+    expect(fixer([ada, linus], new Set(['ada']))).toBe(ada);
+    expect(fixer([linus], new Set())).toBeNull();
   });
 });

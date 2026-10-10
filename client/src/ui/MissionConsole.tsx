@@ -123,6 +123,10 @@ function AlarmCard({ alarm, repo, hot }: { alarm: OpsAlarm; repo: RepoView | und
               </a>
             )}
           </>
+        ) : alarm.kind === 'team' ? (
+          <button className="btn btn-small" title="Change someone's Takes in the Team tab" onClick={() => openOverlay({ kind: 'manager', tab: 'team' })}>
+            👥 Open the Team tab
+          </button>
         ) : (
           alarm.agentId && (
             <>

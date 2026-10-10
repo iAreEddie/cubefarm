@@ -1,6 +1,7 @@
 import { useStore } from './store';
 import type { PongResult } from '../../shared/pong';
 import type { AgentStyle } from '../../shared/looks';
+import type { AgentTakes } from '../../shared/takes';
 import type { AgentCli, AgentPromptView, AgentView, DoctorFinding, DoctorFix, EffortLevel, GhRepoSummary, NotifyChannel, NotifyChannelsView, NotifyWebhook, OfficeUpdateView, PreviewView, ProjectFolderView, PrPreviewView, RepoView, SwarmSettings, UsageView, VoiceCacheView, VoiceOption } from '../../shared/types';
 import type { JournalChunk, JournalDayView } from '../../shared/journal';
 import type { DecorItem, ProgressView } from '../../shared/progress';
@@ -39,11 +40,12 @@ async function clip(url: string): Promise<Blob> {
 
 const r = (repoId: string) => `/api/repos/${encodeURIComponent(repoId)}`;
 
-/** An agent's coding agent, model and effort ('' = the office default). */
+/** An agent's coding agent, model and effort ('' = the office default), and what work they take. */
 export interface AgentSetupPatch {
   cli?: AgentCli | '';
   model?: string;
   effort?: EffortLevel | '';
+  takes?: AgentTakes;
 }
 
 /** Choices made when a project moves in: a brief for the CEO, and whether work starts on its own. */

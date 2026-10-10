@@ -6,6 +6,7 @@ import { agentsOnRepo, kanbanFor, useStore, type Agent } from '../store';
 import { CEO_ID, type RepoView } from '../../../shared/types';
 import { agentLabel } from '../ui/floorRows';
 import { MessageBox } from '../ui/MessageBox';
+import { TakesSelect, TakesWarning } from '../ui/Takes';
 import { toolVerb } from '../world/draw';
 import { agentActions, assignChoices, doing } from './pocketData';
 
@@ -111,6 +112,7 @@ function AgentCard({ agent, repo }: { agent: Agent; repo: RepoView }) {
         <button className="btn btn-small btn-ghost" onClick={() => openOverlay({ kind: 'terminal', agentId: agent.id })}>
           Terminal
         </button>
+        <TakesSelect agent={agent} style={{ width: 'auto' }} />
       </div>
       {writing && can.message && (
         <form
@@ -183,6 +185,7 @@ export function Team({ focusRepo }: { focusRepo: string | null }) {
               <span className="muted small"> · {team.length} {team.length === 1 ? 'agent' : 'agents'}</span>
             </h3>
             {team.length === 0 && <p className="muted small">Nobody works here yet.</p>}
+            <TakesWarning repoId={repo.id} className="term-error small pk-error" />
             {team.map((a) => (
               <AgentCard key={a.id} agent={a} repo={repo} />
             ))}

@@ -1,6 +1,7 @@
 import { createSdkMcpServer, tool, type McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { blockers, holdUps, setDependsOn } from '../shared/issues.ts';
+import type { AgentTakes } from '../shared/takes.ts';
 import { FLOOR_SEATS, type AgentCli, type CeoJobKind, type QaStatus } from '../shared/types.ts';
 import { HttpError } from './httpError.ts';
 import { ONE_TURN } from './prompts.ts';
@@ -30,8 +31,8 @@ export interface OfficeHandlers {
   companyStatus(): string;
   agentDetail(a: { agent_id: string }): string;
   setFloorProfile(a: { floor: number; summary?: string; qa_brief?: string; preview_command?: string; preview_env?: Record<string, string> }): string;
-  scaleTeam(a: { floor: number; size: number; reason: string; cli?: AgentCli; model?: string; effort?: string }): string;
-  configureAgent(a: { agent_id: string; cli?: AgentCli | ''; model?: string; effort?: string }): string;
+  scaleTeam(a: { floor: number; size: number; reason: string; cli?: AgentCli; model?: string; effort?: string; takes?: AgentTakes }): string;
+  configureAgent(a: { agent_id: string; cli?: AgentCli | ''; model?: string; effort?: string; takes?: AgentTakes }): string;
   fileIssue(a: { floor: number; title: string; body: string }): Promise<string>;
   setDependencies(a: { floor: number; number: number; depends_on: number[] }): Promise<string>;
   closeIssue(a: { floor: number; number: number; reason: string }): Promise<string>;
@@ -52,6 +53,7 @@ export interface OfficeTools {
 
 const EFFORT = z.enum(['low', 'medium', 'high', 'xhigh', 'max']);
 const CLI = z.enum(['claude', 'codex', 'opencode']);
+const TAKES = z.enum(['any', 'build', 'qa']).describe('What work they take: any (the default), build (issues and fixes, never QA) or qa (only QA)');
 
 export function createOfficeTools(h: OfficeHandlers): OfficeTools {
   const run = async (fn: () => string | Promise<string>) => {
@@ -70,7 +72,7 @@ export function createOfficeTools(h: OfficeHandlers): OfficeTools {
     ),
     tool(
       'agent_detail',
-      'One agent in full: status, current task, and the coding agent, model and effort they run.',
+      'One agent in full: status, current task, the coding agent, model and effort they run, and what work they take.',
       { agent_id: z.string().describe('An id (or name) from company_status') },
       (a) => run(() => h.agentDetail(a)),
     ),
@@ -107,17 +109,19 @@ export function createOfficeTools(h: OfficeHandlers): OfficeTools {
         cli: CLI.optional().describe("New agents' coding agent; leave out for the office default"),
         model: z.string().optional().describe("New agents' model; leave out for the default"),
         effort: EFFORT.optional().describe("New agents' reasoning effort; leave out for the default"),
+        takes: TAKES.optional(),
       },
       (a) => run(() => h.scaleTeam(a)),
     ),
     tool(
       'configure_agent',
-      "Change an agent's coding agent, model or reasoning effort. Takes effect from their next task.",
+      "Change an agent's coding agent, model, reasoning effort or what work they take. Takes effect from their next task.",
       {
         agent_id: z.string(),
         cli: z.union([CLI, z.literal('')]).optional().describe('"" for the office default'),
         model: z.string().optional().describe('"" for the default'),
         effort: z.union([EFFORT, z.literal('')]).optional().describe('"" for the office default'),
+        takes: TAKES.optional(),
       },
       (a) => run(() => h.configureAgent(a)),
     ),
@@ -276,7 +280,7 @@ export function ceoSystemPrompt(o: {
     '- Never decide on new work yourself. Only the manager asks for changes to their projects: file issues only when they asked in this job. In reviews, onboarding and triage, suggest work in your final message instead, and they decide.',
     '- Every floor keeps at least one agent.',
     `- Change a floor's size with one scale_team call, with a reason the manager can decide on in a sentence or two. ${o.scaling === 'auto' ? "Team changes apply straight away, within the floor's max, so be deliberate." : 'The manager approves every change, and sets up each new agent before hiring them.'} If the manager declined a similar change (recentDecisions), do not ask again unless something has changed, and say what.`,
-    "- Agents run the office's default coding agent, model and effort. Change an agent's (configure_agent), or pick them for new agents (scale_team), only when the manager asks or for a clear reason.",
+    "- Agents run the office's default coding agent, model and effort, and take any work. Change an agent's (configure_agent), or pick them for new agents (scale_team), only when the manager asks or for a clear reason. Never leave a floor with nobody who builds or nobody who tests (takes).",
     '- Issues: the same agents build and test, so PRs queued for QA (capacity.prsAwaitingQa) mean fewer, bigger issues, not more. Most briefs need 1 to 4 issues. Write "Depends on #N" only when an issue truly cannot start until #N\'s code is merged, because it waits until #N is closed. Keep dependency chains to two steps at most. The office starts the issues that hold up others first. Do not duplicate open issues: fix an existing issue\'s dependencies with set_dependencies. File at most 12 issues per job, or per message from the manager.',
     '- Close an issue that is superseded or no longer wanted with close_issue, not by making it wait for another issue.',
     '- Triage jobs: a pull request got stuck (needs-human). Look before the manager does, and bring them only real decisions. Read the facts in the job and the code, then call exactly one of retry_qa (a flaky QA session, or it has been fixed since), send_back (a developer can fix it; your note says how), rerun_checks (a red check that looks flaky or like an outage), close_pull (the approach is wrong: its issue stays open to be built again) or escalate (only the manager can decide: a product call, credentials, a broken setup).',

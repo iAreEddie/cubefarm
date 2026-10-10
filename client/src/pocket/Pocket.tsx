@@ -10,6 +10,7 @@ import { NotifySettings } from '../ui/NotifySettings';
 import { AccessibilitySettings } from '../ui/AccessibilitySettings';
 import { Panel } from '../ui/Panel';
 import { Chat } from '../ui/Phone';
+import { TakesWarning } from '../ui/Takes';
 import { setMode } from './mode';
 import { approvalsBadge, pipelineOf, waitingOnYou, type Pipeline } from './pocketData';
 import { Approvals } from './PocketApprovals';
@@ -114,6 +115,7 @@ function Company({ go }: { go: (tab: PocketTab, repoId?: string) => void }) {
               <div className="muted small pk-ellipsis">{repo.summary || repo.description || repo.fullName}</div>
             </div>
           </div>
+          <TakesWarning repoId={repo.id} className="term-error small pk-error" />
           <div className="pk-pipeline" role="list" aria-label={`Floor ${repo.floor} pipeline`}>
             {STAGES.map(([k, icon, label]) => (
               <div key={k} role="listitem" className={`pk-stage ${p[k] ? '' : 'pk-stage-zero'} ${k === 'needsYou' && p[k] ? 'pk-stage-hot' : ''}`}>

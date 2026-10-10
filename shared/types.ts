@@ -5,6 +5,7 @@ import type { ProgressView, RewardView } from './progress.ts';
 import type { WeatherSettings, WeatherView, WorldEventSettings } from './outside.ts';
 import type { ThemeSettings } from './themes.ts';
 import type { AgentStyle } from './looks.ts';
+import type { AgentTakes } from './takes.ts';
 
 export type AgentStatus =
   | 'idle' // at desk, nothing assigned
@@ -212,6 +213,7 @@ export interface AgentView {
   model: string; // '' = use the swarm default model, or a model id / alias
   effort: EffortLevel | ''; // '' = use the swarm default effort
   cli: AgentCli | ''; // the CLI they run in the terminal runtime ('' = the office default)
+  takes?: AgentTakes; // what work the scheduler hands them (shared/takes.ts); missing (older journals) = 'any'
   terminal: boolean; // they have a terminal to watch (the terminal runtime); otherwise their log lines are the screen
   status: AgentStatus;
   issueNumber: number | null; // the issue being built, or the one the PR under test or fix closes
@@ -450,8 +452,8 @@ export interface OpsFloor extends OpsNumbers {
 
 /** Something that needs the manager: a PR the office can't move (needsManager), or an agent in error for over 10 minutes. */
 export interface OpsAlarm {
-  id: string; // "pr:<repo>#<n>" or "agent:<id>": the manager's console opens at this card
-  kind: 'pr' | 'agent';
+  id: string; // "pr:<repo>#<n>", "agent:<id>" or "team:<repo>": the manager's console opens at this card
+  kind: 'pr' | 'agent' | 'team'; // team: nobody on the floor may build, or test (agents' Takes)
   repoId: string;
   floor: number;
   prNumber: number | null;
@@ -513,6 +515,7 @@ export interface HireRequestView {
   cli: AgentCli | ''; // the coding agent they'll run ('' = the office default)
   model: string; // '' = the default model
   effort: EffortLevel | '';
+  takes?: AgentTakes; // missing (older state) = 'any'
   look: AgentLook;
   color: string;
   hair: string;

@@ -6,6 +6,7 @@ import { AgentSetup } from './AgentSettings';
 import { confirmDialog } from './Confirm';
 import { LiveTerminal } from './LiveTerminal';
 import { effectiveModel } from '../../../shared/models';
+import { TAKES_LABEL } from '../../../shared/takes';
 import { assignChoices } from '../pocket/pocketData';
 import { agentLabel, workerCli } from './floorRows';
 import { MessageBox } from './MessageBox';
@@ -184,6 +185,7 @@ export function TerminalView({ agentId }: { agentId: string }) {
         <span className="muted">
           {(agent.role === 'ceo' ? agent.model : effectiveModel(agent.model, cli, settings, 'claude-opus-5-5')) || 'default model'} ·{' '}
           {agent.effort || settings.defaultEffort} effort
+          {agent.takes && agent.takes !== 'any' ? ` · ${TAKES_LABEL[agent.takes]}` : ''}
         </span>
         {agent.startedAt && <span className="muted">⏱ {elapsed(agent.startedAt, working ? null : agent.endedAt)}</span>}
         {agent.turns > 0 && <span className="muted">{agent.turns} turns</span>}

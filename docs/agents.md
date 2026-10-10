@@ -18,6 +18,18 @@ An agent has a name and a look, for personality, and three settings: its **provi
 
 Most people have one subscription, so the default is every agent on the same provider. Mixing providers (Codex reviewing what Claude wrote, say) is an option for those who have more than one, never a requirement.
 
+### Takes (opt-in)
+
+A fourth setting, **Takes**, decides what work the office hands an agent. It is a scheduling preference, not a role: an agent on it is the same agent with the same prompt, only offered less.
+
+- **Anything** (the default): builds, tests and fixes, whichever is next. A floor where nobody changes it works exactly as described above.
+- **Building and fixes**: never picked to test a pull request.
+- **QA only**: never given an issue or a fix.
+
+It is for spending tokens well: a cheap model builds, a stronger one reviews. QA still never goes to a pull request's author (unless nobody else may test it and 15 minutes went by, as above, and only if the author may test), and a fix goes to its author when they build, otherwise to any free builder. Hand-assigning work an agent doesn't take is refused with a note to change their Takes.
+
+Set it in their ⚙️ Setup, the console's Team tab, a lobby candidate's card or pocket mode's Team tab; the CEO can set it with `configure_agent` and `scale_team`. Changing it asks first when it would leave a floor with nobody to build, or nobody to test. A floor in that state shows it: an alarm on mission control (and the floor's beacon), a warning in the Team tab and in pocket mode's Company and Team tabs, and in the CEO's `company_status`.
+
 ## A floor's team
 
 Each floor (one repository) has its own team, up to **10 agents** by default (Settings → *Most agents per floor*, at most 15: the room has 15 desks). Agents stay on their floor and take that board's work.

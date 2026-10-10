@@ -14,6 +14,7 @@ import { Games, type GameId } from './games/Games';
 import { HolidayStrip } from './HolidayStrip';
 import { replayKind } from './voiceQueue';
 import { CLAUDE_MODELS, effectiveModel, modelSuggestions } from '../../../shared/models';
+import { TAKES, TAKES_LABEL, type AgentTakes } from '../../../shared/takes';
 
 // The manager's phone: text the CEO, decide on team changes, see the whole company at a glance
 // without walking anywhere, and play a game while the team works. Press P anywhere in the office.
@@ -54,17 +55,19 @@ export interface HireSetup {
   cli: AgentCli | '';
   model: string;
   effort: EffortLevel | '';
+  takes: AgentTakes;
 }
 
-export const setupOf = (r: HireRequestView): HireSetup => ({ name: r.name, cli: r.cli, model: r.model, effort: r.effort });
+export const setupOf = (r: HireRequestView): HireSetup => ({ name: r.name, cli: r.cli, model: r.model, effort: r.effort, takes: r.takes ?? 'any' });
 
 /** The approval's overrides: the setup as the manager left it, an emptied name back to the CEO's pick. */
-export const hireOverrides = (r: HireRequestView, s: HireSetup) => ({ name: s.name.trim() || r.name, cli: s.cli, model: s.model.trim(), effort: s.effort });
+export const hireOverrides = (r: HireRequestView, s: HireSetup) => ({ name: s.name.trim() || r.name, cli: s.cli, model: s.model.trim(), effort: s.effort, takes: s.takes });
 
-/** "Claude Code · claude-opus-5-5 · medium effort": what they'll run, the office defaults filled in. */
-export function setupLine(s: Pick<HireSetup, 'cli' | 'model' | 'effort'>, settings: SwarmSettings, clis: CliView[]) {
+/** "Claude Code · claude-opus-5-5 · medium effort": what they'll run, the office defaults filled in (and what they take, if pinned). */
+export function setupLine(s: Pick<HireSetup, 'cli' | 'model' | 'effort'> & { takes?: AgentTakes }, settings: SwarmSettings, clis: CliView[]) {
   const cli = hireCli(s.cli, settings);
-  return `${cliLabel(clis, cli)} · ${effectiveModel(s.model, cli, settings, CLAUDE_MODELS[0]) || 'its default model'} · ${s.effort || settings.defaultEffort} effort`;
+  const takes = s.takes && s.takes !== 'any' ? ` · ${TAKES_LABEL[s.takes]}` : '';
+  return `${cliLabel(clis, cli)} · ${effectiveModel(s.model, cli, settings, CLAUDE_MODELS[0]) || 'its default model'} · ${s.effort || settings.defaultEffort} effort${takes}`;
 }
 
 /** A new agent's settings, edited before they're created: the lobby's card and the phone's both use these. */
@@ -125,6 +128,16 @@ export function HireSetupFields({ value, onChange, disabled }: { value: HireSetu
           {EFFORTS.map((x) => (
             <option key={x} value={x}>
               {x}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="field" htmlFor={`${id}-takes`}>
+        <span>Takes</span>
+        <select id={`${id}-takes`} value={value.takes} disabled={disabled} title="What work the office hands them" onChange={(e) => set({ takes: e.target.value as AgentTakes })}>
+          {TAKES.map((t) => (
+            <option key={t} value={t}>
+              {TAKES_LABEL[t]}
             </option>
           ))}
         </select>

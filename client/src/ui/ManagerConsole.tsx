@@ -6,6 +6,8 @@ import { agentsOnRepo, pendingRequests, useStore, type ManagerTab } from '../sto
 import { CEO_ID, DEFAULT_MAX_AGENTS, FLOOR_SEATS, type AgentCli, type EffortLevel, type OfficeUpdateView, type RepoView } from '../../../shared/types';
 import { CLAUDE_MODELS, modelSuggestions } from '../../../shared/models';
 import { CliOptions, CliSelect, cliName, EFFORTS, EffortSelect, LookEditor, LookSelect, ModelInput, NameInput, PromptPreview } from './AgentSettings';
+import { TakesSelect, TakesWarning } from './Takes';
+import { TAKES, TAKES_LABEL, type AgentTakes } from '../../../shared/takes';
 import { canPostpone, canUpdateNow, drainDeadline, officeUpdateText } from '../officeUpdate';
 import { confirmDialog } from './Confirm';
 import { IssueForm } from './KanbanView';
@@ -372,11 +374,12 @@ interface NewAgent {
   cli: AgentCli | '';
   model: string;
   effort: EffortLevel | '';
+  takes: AgentTakes;
 }
 
-const NO_SETUP: NewAgent = { name: '', cli: '', model: '', effort: '' };
+const NO_SETUP: NewAgent = { name: '', cli: '', model: '', effort: '', takes: 'any' };
 
-/** A floor's "+ Agent": an optional name and their coding agent, model and effort ('' = the office's defaults). */
+/** A floor's "+ Agent": an optional name, their coding agent, model and effort ('' = the office's defaults) and what they take. */
 function AddAgent({ repo, size }: { repo: RepoView; size: number }) {
   const settings = useStore((s) => s.settings);
   const clis = useStore((s) => s.clis);
@@ -416,6 +419,13 @@ function AddAgent({ repo, size }: { repo: RepoView; size: number }) {
           </option>
         ))}
       </select>
+      <select value={draft.takes} onChange={(e) => edit({ takes: e.target.value as AgentTakes })} aria-label="What the new agent takes" title="What work the office hands them" style={{ width: 'auto' }}>
+        {TAKES.map((t) => (
+          <option key={t} value={t}>
+            Takes: {TAKES_LABEL[t]}
+          </option>
+        ))}
+      </select>
       <span title={full ? `Floor ${repo.floor} has its most agents (${settings.maxAgents}): change it in Settings → Most agents per floor` : undefined}>
         <button className="btn btn-small btn-good" disabled={busy || full} onClick={add}>
           + Agent
@@ -447,6 +457,7 @@ function TeamTab() {
                 {team.length} of {settings.maxAgents} agents
               </span>
             </div>
+            <TakesWarning repoId={repo.id} />
             <AddAgent repo={repo} size={team.length} />
             {team.length === 0 && <div className="muted small">No one works here yet.</div>}
             <table className="team">
@@ -480,6 +491,9 @@ function TeamTab() {
                     <td>
                       <EffortSelect agent={a} style={{ width: 124 }} />
                     </td>
+                    <td>
+                      <TakesSelect agent={a} style={{ width: 150 }} />
+                    </td>
                     <td className="nowrap">
                       <button className="btn btn-small" onClick={() => openOverlay({ kind: 'terminal', agentId: a.id })}>
                         Terminal
@@ -499,7 +513,7 @@ function TeamTab() {
                   {openLook === a.id && (
                     <tr>
                       <td />
-                      <td colSpan={terminal ? 8 : 7}>
+                      <td colSpan={terminal ? 9 : 8}>
                         <label className="row small">
                           <span>Drawn as</span>
                           <LookSelect agent={a} />

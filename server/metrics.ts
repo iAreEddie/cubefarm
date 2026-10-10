@@ -1,4 +1,5 @@
 import { prStage } from '../shared/ops.ts';
+import { gapsText, takesGaps, type AgentTakes } from '../shared/takes.ts';
 import type { AgentRole, AgentStatus, OpsAlarm, OpsFloor, OpsNumbers, OpsView, PullInfo, QaView } from '../shared/types.ts';
 
 // Mission control's numbers (#216): pure functions over the office's state now, plus a compact rolling history of
@@ -171,8 +172,9 @@ export interface OpsFloorState {
   repoId: string;
   floor: number;
   ready: number; // backlog issues that can start now
-  agents: { id: string; name: string; role: AgentRole; task: string | null; status: AgentStatus; endedAt: number | null; lastError: string | null }[];
+  agents: { id: string; name: string; role: AgentRole; task: string | null; status: AgentStatus; endedAt: number | null; lastError: string | null; takes?: AgentTakes }[];
   prs: { number: number; qa: Pick<QaView, 'status' | 'ceoLooking' | 'updatedAt'> | null; why: string | null }[]; // open PRs
+  teamGapSince?: number; // since when its agents' Takes have left it with nobody to build or test
 }
 
 const BUSY: AgentStatus[] = ['preparing', 'working'];
@@ -201,7 +203,7 @@ const firstLine = (s: string, max = 120) => {
   return line.length > max ? `${line.slice(0, max - 1)}…` : line;
 };
 
-/** What on this floor needs the manager: PRs that need you, and agents in error for over ALARM_ERROR_MS. */
+/** What on this floor needs the manager: PRs that need you, agents in error for over ALARM_ERROR_MS, and a team nobody of which may build, or test. */
 export function floorAlarms(f: OpsFloorState, now: number): OpsAlarm[] {
   const base = { repoId: f.repoId, floor: f.floor };
   const prs: OpsAlarm[] = f.prs
@@ -210,7 +212,9 @@ export function floorAlarms(f: OpsFloorState, now: number): OpsAlarm[] {
   const agents: OpsAlarm[] = f.agents
     .filter((a) => a.role !== 'ceo' && a.status === 'error' && a.endedAt !== null && now - a.endedAt >= ALARM_ERROR_MS)
     .map((a) => ({ ...base, id: `agent:${a.id}`, kind: 'agent', prNumber: null, agentId: a.id, text: `${a.name} is stuck on an error${a.lastError ? `: ${firstLine(a.lastError)}` : ''}`, since: a.endedAt! }));
-  return [...prs, ...agents];
+  const gap = gapsText(takesGaps(f.agents.filter((a) => a.role !== 'ceo')));
+  const team: OpsAlarm[] = gap ? [{ ...base, id: `team:${f.repoId}`, kind: 'team', prNumber: null, agentId: null, text: gap.split(':')[0].replace(/\.$/, ''), since: f.teamGapSince ?? now }] : [];
+  return [...prs, ...agents, ...team];
 }
 
 /** Mission control: every floor's numbers, the total (connected floors and the CEO) and the alarms, oldest first. */
