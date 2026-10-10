@@ -1,7 +1,7 @@
 import { useStore } from './store';
 import type { PongResult } from '../../shared/pong';
 import type { AgentStyle } from '../../shared/looks';
-import type { AgentCli, AgentPromptView, AgentView, DoctorFinding, DoctorFix, EffortLevel, GhRepoSummary, NotifyChannel, NotifyChannelsView, NotifyWebhook, OfficeUpdateView, PreviewView, ProjectFolderView, PrPreviewView, RepoView, SwarmSettings, UsageView, VoiceCacheView, VoiceOption } from '../../shared/types';
+import type { AgentCli, AgentPromptView, AgentView, DoctorFinding, DoctorFix, EffortLevel, GhRepoSummary, NotifyChannel, NotifyChannelsView, NotifyWebhook, OfficeUpdateView, PreviewView, ProjectFolderView, PrPreviewView, RepoView, SwarmSettings, TextFileView, UsageView, VoiceCacheView, VoiceOption } from '../../shared/types';
 import type { JournalChunk, JournalDayView } from '../../shared/journal';
 import type { DecorItem, ProgressView } from '../../shared/progress';
 
@@ -151,5 +151,9 @@ export const api = {
   placeDecor: (repoId: string, body: { item: DecorItem; slot: string | null; from: string | null }) => call<ProgressView>('POST', `${r(repoId)}/decor/place`, body),
   drankCoffee: (id: string) => call<{ coffees: number }>('POST', '/api/progress/coffee', { id }, false),
   /** Demo only: coins for a floor, or days of tenure for one agent (or everyone). */
+  /** Show a path from a message selected in the PC's file manager. */
+  revealPath: (path: string) => call<{ path: string }>('POST', '/api/files/reveal', { path }),
+  /** A .md, .txt or .log file in the office, read-only (the phone's viewer). */
+  textFile: (path: string) => call<TextFileView>('GET', `/api/files/text?path=${encodeURIComponent(path)}`),
   demoProgress: (body: { action: 'coins'; repoId: string; coins: number } | { action: 'tenure'; days: number; agentId?: string }) => call<ProgressView>('POST', '/api/progress/demo', body),
 };

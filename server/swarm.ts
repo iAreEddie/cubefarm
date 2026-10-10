@@ -28,6 +28,7 @@ import { checkTriageTarget, triageStep, type TriagePr } from './triage.ts';
 import { DEFAULT_PREVIEW, Previews, parsePreviewPatch } from './previews.ts';
 import { PREVIEW_SLUG } from './previewRunner.ts';
 import { pruneQaShots, qaShotsDir, readQaShot, removeQaShots, saveQaShots } from './qaShots.ts';
+import { allowedPath, TEXT_MAX_BYTES, textFileProblem } from './reveal.ts';
 import { agentPromptPreview, ceoPromptPreview, devBranch, devSystemPrompt, failedLogLines, noPushNudge, ownPrLine, qaBranch, qaSystemPrompt } from './prompts.ts';
 import { QA_RESUME_PROMPT, qaRetry } from './qaRetry.ts';
 import { drainDecision, lastUpdateMessage, POSTPONE_MS, type DrainInput, type LastUpdate } from './officeUpdate.ts';
@@ -1680,6 +1681,37 @@ export class Swarm {
     if (!shot) return null;
     const data = await readQaShot(qaShotsDir(QA_SHOTS_DIR, repoId, pr), index, shot.mime);
     return data && { data, mime: shot.mime };
+  }
+
+  // ---------- paths in messages (server/reveal.ts) ----------
+
+  /** Where "Show in folder" and the phone's viewer may look: SWARM_HOME (the agents' machines too) and the floors' checkouts. */
+  private fileRoots(): string[] {
+    return this.backend.demo ? [HOME_DIR] : [HOME_DIR, ...this.state.repos.map((r) => this.backend.mainDir(r.fullName))];
+  }
+
+  /** Show a file or folder selected in the PC's file manager; never opens it. */
+  async revealPath(raw: unknown): Promise<{ path: string }> {
+    const p = await allowedPath(raw, this.fileRoots());
+    await this.backend.revealPath(p);
+    return { path: p };
+  }
+
+  /** A .md, .txt or .log file in the office, read-only, for the phone. */
+  async readTextFile(raw: unknown): Promise<{ path: string; name: string; text: string; truncated: boolean }> {
+    const p = await allowedPath(raw, this.fileRoots());
+    const problem = textFileProblem(p);
+    if (problem) throw new HttpError(403, problem);
+    const file = await fs.open(p, 'r');
+    try {
+      const stat = await file.stat();
+      if (!stat.isFile()) throw new HttpError(400, 'Not a file');
+      const buf = Buffer.alloc(Math.min(stat.size, TEXT_MAX_BYTES));
+      const { bytesRead } = await file.read(buf, 0, buf.length, 0);
+      return { path: p, name: path.basename(p), text: buf.subarray(0, bytesRead).toString('utf8'), truncated: stat.size > TEXT_MAX_BYTES };
+    } finally {
+      await file.close();
+    }
   }
 
   /**

@@ -388,6 +388,15 @@ export interface VoiceCacheView {
   saved: number[]; // message ids with every clip still on disk
 }
 
+/** GET /api/files/text: a .md, .txt or .log file in the office, read-only, for the phone (server/reveal.ts). */
+export interface TextFileView {
+  path: string;
+  name: string;
+  text: string;
+  /** Only the first part of a big file came. */
+  truncated: boolean;
+}
+
 /** GET /api/voice/voices: a voice the manager can pick. recommended: on docs/voice.md's shortlist. */
 export interface VoiceOption {
   id: string;
