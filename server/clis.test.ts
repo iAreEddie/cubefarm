@@ -130,6 +130,19 @@ describe('launchArgs', () => {
     expect(resumed).toContain('--dangerously-bypass-approvals-and-sandbox');
   });
 
+  it('runs Codex without its daemon, which a mismatched install refuses to start without', () => {
+    // An install whose CLI package doesn't match its executable answers every run with "Error: the CLI package does
+    // not match this platform or executable. To work without the background server, rerun the same command with
+    // --no-daemon." and exits, taking the whole prompt with it — the CEO came back saying the message was empty.
+    // The office gives each agent its own pty, so it wants no shared daemon either way.
+    const fresh = launchArgs('codex', ctx()).args;
+    expect(fresh).toContain('--no-daemon');
+    expect(fresh[0]).toBe('--no-alt-screen'); // and it is a top-level flag, before any -c overrides
+    const resumed = launchArgs('codex', ctx({ resumeId: 'thread-1' })).args;
+    expect(resumed[0]).toBe('resume');
+    expect(resumed).toContain('--no-daemon');
+  });
+
   it("gives Codex the office's hooks, with the office's address in its environment", () => {
     const { args, env } = launchArgs('codex', ctx());
     const hooks = args.filter((a) => a.startsWith('hooks.'));

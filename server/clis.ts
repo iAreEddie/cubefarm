@@ -310,6 +310,11 @@ export function launchArgs(id: AgentCli, ctx: LaunchContext): Launch {
       const toml = (s: string) => JSON.stringify(s); // a JSON string is a valid TOML basic string
       const args = [
         '--no-alt-screen',
+        // Without this, an install whose CLI package doesn't match its executable refuses to start at all: "Error: the
+        // CLI package does not match this platform or executable. To work without the background server, rerun the
+        // same command with --no-daemon." The office runs one session per agent in its own pty, so it wants no daemon
+        // anyway — and a session that dies at startup takes the whole prompt with it (the CEO got an empty message).
+        '--no-daemon',
         '-c',
         `notify=[${[process.execPath, ctx.notify.script, ctx.notify.url].map(toml).join(',')}]`,
         '-c',
@@ -324,6 +329,7 @@ export function launchArgs(id: AgentCli, ctx: LaunchContext): Launch {
         // the credential store, so git and gh fail in it).
         '--dangerously-bypass-approvals-and-sandbox',
       ];
+      // `resume` takes its own flags the same way, with the session id and then the prompt.
       return { args: ctx.resumeId ? ['resume', ...args, ctx.resumeId, ctx.prompt] : [...args, '--', ctx.prompt], env: { CUBEFARM_HOOK_URL: ctx.notify.url } };
     }
     case 'opencode': {
