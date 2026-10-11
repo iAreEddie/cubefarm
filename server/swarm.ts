@@ -22,7 +22,7 @@ import { conflictFixInstructions, MAX_QA_ROUNDS, qaGate, qaOutcome, type PreQa, 
 import { qaInstructions } from './qaPrompt.ts';
 import { followKeptCli, resumeNote, resumesAfterRestart } from './restartRecovery.ts';
 import { reconcileStep, restartMessage, sessionStart, workState, type ReconcileStep, type RestartCounts, type WorkState } from './reconcile.ts';
-import { diagnose, finding, forget, NUDGE_WAIT_MS, nudgeText, QUIET_MS, triage, unclosedIssues, type Problem, type Remedy, type WatchAgent, type WatchMemory } from './watchdog.ts';
+import { diagnose, finding, forget, NUDGE_WAIT_MS, nudgeText, QUIET_MS, reportable, REPORT_QUIET_MS, triage, unclosedIssues, type Problem, type Remedy, type WatchAgent, type WatchMemory } from './watchdog.ts';
 import { sendBackPatch } from './sendBack.ts';
 import { checkTriageTarget, triageStep, type TriagePr } from './triage.ts';
 import { DEFAULT_PREVIEW, Previews, parsePreviewPatch } from './previews.ts';
@@ -4189,7 +4189,7 @@ export class Swarm {
   // ---------- the watchdog and the office doctor (#262) ----------
 
   private activity = new Map<string, number>(); // agent id -> their session's latest output or tool activity
-  private watch: WatchMemory = { remedied: new Map(), nudged: new Map() };
+  private watch: WatchMemory = { remedied: new Map(), nudged: new Map(), reported: new Map() };
   private doctor: DoctorFinding[] = [];
   private ignored = new Set<string>(); // findings the manager ignored, until they go away
   private lastDoctor = '';
@@ -4253,6 +4253,25 @@ export class Swarm {
       const rt = this.repoRt.get(r.id);
       return rt?.lastSync ? unclosedIssues(r.id, rt.issues.map((i) => i.number), rt.pulls) : [];
     });
+    // Tell the CEO about anything that has gone quiet or lost its process, on this minute's tick rather than after the
+    // healing window. The office does this itself: no agent is woken to watch other agents, and the CEO is the one who
+    // can act on it (the manager reads the same line in the office chat).
+    for (const a of reportable(agents, now)) {
+      const key = `report:${a.id}`;
+      const mins = Math.round((now - a.activeAt) / 60_000);
+      if (this.watch.reported.get(key) !== undefined) continue;
+      this.watch.reported.set(key, now);
+      const what = a.prNumber != null ? `PR #${a.prNumber}` : `#${a.issueNumber}`;
+      const why = a.cliDead ? 'its CLI process is gone' : `nothing for ${mins} minutes`;
+      this.postMessage('office', `🩺 ${a.name} has gone quiet on ${what} (${why}). The CEO has been told.`);
+      this.toast('info', `${a.name} is quiet on ${what}`);
+      this.enqueueCeo({ kind: 'review', at: now });
+    }
+    // An agent that has spoken since its report starts a fresh one: the next silence on it is news again.
+    for (const a of agents) {
+      const key = `report:${a.id}`;
+      if (this.watch.reported.has(key) && !a.cliDead && now - a.activeAt < REPORT_QUIET_MS) this.watch.reported.delete(key);
+    }
     const { auto, doctor } = triage(diagnose(agents, this.state.qa, unclosed, now), this.watch, now);
     if (heal) {
       const done = auto.map(({ problem, remedy }) => this.remedy(problem, remedy, now)).filter((t): t is string => !!t);

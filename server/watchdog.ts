@@ -9,6 +9,13 @@ import type { WorkState } from './reconcile.ts';
 
 /** A session with no output and no tool activity for this long is quiet. */
 export const QUIET_MS = 20 * 60_000;
+/**
+ * A session that has said nothing for this long is worth telling the CEO about, without waiting for the full quiet
+ * window. Five minutes is the manager's ask: short enough to catch a session that wedged early, long enough that it is
+ * not just a slow build (the office's own suite takes ~100 s). This is a report, not a remedy -- the healing thresholds
+ * below are unchanged, so a false alarm here costs a CEO message rather than someone's work.
+ */
+export const REPORT_QUIET_MS = 5 * 60_000;
 /** After a nudge, how long a quiet session gets to answer before its work goes back in line. */
 export const NUDGE_WAIT_MS = 10 * 60_000;
 /** Setting up a desk taking longer than this is stuck. */
@@ -78,6 +85,20 @@ export interface Problem {
 const BUSY = ['preparing', 'working'];
 const workKey = (a: WatchAgent) => `${a.repoId}#${a.task === 'issue' && !a.prNumber ? `i${a.issueNumber}` : `p${a.prNumber}`}`;
 
+/**
+ * Sessions that have gone quiet long enough to tell the CEO about, before the healing thresholds apply. Kept apart from
+ * diagnose() on purpose: this decides only what is worth reporting, so a long build or a slow tool call can raise a
+ * message without anyone's work being taken off them. A dead CLI is always reportable: it is stuck, not slow.
+ */
+export function reportable(agents: readonly WatchAgent[], now: number): WatchAgent[] {
+  return agents.filter((a) => {
+    if (a.role === 'ceo' || !a.task) return false;
+    if (a.status !== 'working' && a.status !== 'preparing') return false;
+    if (a.cliDead) return true;
+    return now - a.activeAt >= REPORT_QUIET_MS;
+  });
+}
+
 /** Everything stuck right now. */
 export function diagnose(agents: readonly WatchAgent[], qa: readonly WatchQa[], unclosed: readonly Unclosed[], now: number): Problem[] {
   const out: Problem[] = [];
@@ -137,7 +158,15 @@ export function unclosedIssues(
 export interface WatchMemory {
   remedied: Map<string, number>;
   nudged: Map<string, number>;
+  /**
+   * When each agent's quiet spell was last reported to the CEO. Kept so one long silence raises one message rather than
+   * one a minute; cleared when the agent speaks again, so a second spell is reported too.
+   */
+  reported: Map<string, number>;
 }
+
+/** How long a report stands before the same agent may be reported again on the same work. */
+export const REPORT_EVERY_MS = 30 * 60_000;
 
 /** nudge: say something to the quiet session · requeue: stop it and put the work back · clear: clear the desk · retry-qa / refix: back in the PR's queue. */
 export type Remedy = 'nudge' | 'requeue' | 'clear' | 'retry-qa' | 'refix';
@@ -187,6 +216,13 @@ export function triage(problems: readonly Problem[], memory: WatchMemory, now: n
  */
 export function forget(memory: WatchMemory, now: number) {
   for (const map of [memory.nudged, memory.remedied]) for (const [key, at] of map) if (now - at >= REMEDY_EVERY_MS) map.delete(key);
+  // Reports stand for a shorter window, so an agent still quiet half an hour later is raised again.
+  for (const [key, at] of memory.reported) if (now - at >= REPORT_EVERY_MS) memory.reported.delete(key);
+}
+
+/** The agent spoke or its work changed: a later silence on it should be reported again. */
+export function forgetReport(memory: WatchMemory, agentId: string) {
+  memory.reported.delete(`report:${agentId}`);
 }
 
 const ago = (ms: number) => {

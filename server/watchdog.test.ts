@@ -8,6 +8,8 @@ import {
   PREPARING_MS,
   QUIET_MS,
   REMEDY_EVERY_MS,
+  reportable,
+  REPORT_QUIET_MS,
   triage,
   UNCLOSED_GRACE_MS,
   unclosedIssues,
@@ -35,7 +37,7 @@ const agent = (over: Partial<WatchAgent> = {}): WatchAgent => ({
 });
 
 const rec = (over: Partial<WatchQa> = {}): WatchQa => ({ repoId: 'r1', prNumber: 181, status: 'testing', qaAgentId: 'q1', devAgentId: 'a1', updatedAt: NOW - 10 * MIN, ...over });
-const memory = (): WatchMemory => ({ remedied: new Map(), nudged: new Map() });
+const memory = (): WatchMemory => ({ remedied: new Map(), nudged: new Map(), reported: new Map() });
 
 describe('diagnose', () => {
   it('finds a session with no output or tool activity for 20 minutes', () => {
@@ -98,6 +100,26 @@ describe('unclosedIssues', () => {
       { number: 216, state: 'OPEN', mergedAt: null, closesIssues: [209] },
     ];
     expect(unclosedIssues('r1', [207, 209], pulls)).toEqual([{ repoId: 'r1', issue: 207, pr: 215, mergedAt: NOW }]);
+  });
+});
+
+describe('reportable', () => {
+  it('names a session quiet for five minutes, well before the healing window', () => {
+    // The point of this list is to tell the CEO early without taking anyone's work: REPORT_QUIET_MS is five minutes,
+    // while the remedies still wait for QUIET_MS (twenty). A slow build must raise a message, not a requeue.
+    expect(REPORT_QUIET_MS).toBe(5 * MIN);
+    expect(REPORT_QUIET_MS).toBeLessThan(QUIET_MS);
+    expect(reportable([agent({ activeAt: NOW - REPORT_QUIET_MS + 1 })], NOW)).toEqual([]);
+    expect(reportable([agent({ activeAt: NOW - REPORT_QUIET_MS })], NOW)).toMatchObject([{ id: 'a1' }]);
+    // Nothing is diagnosed (and so nothing is healed) at that age.
+    expect(diagnose([agent({ activeAt: NOW - REPORT_QUIET_MS })], [], [], NOW)).toEqual([]);
+  });
+
+  it('reports a dead CLI at once, and leaves idle or task-less agents alone', () => {
+    expect(reportable([agent({ cliDead: true, activeAt: NOW })], NOW)).toMatchObject([{ id: 'a1' }]);
+    expect(reportable([agent({ activeAt: NOW - QUIET_MS * 2, status: 'idle' })], NOW)).toEqual([]);
+    expect(reportable([agent({ activeAt: NOW - QUIET_MS * 2, task: null })], NOW)).toEqual([]);
+    expect(reportable([agent({ activeAt: NOW - QUIET_MS * 2, role: 'ceo' })], NOW)).toEqual([]);
   });
 });
 
