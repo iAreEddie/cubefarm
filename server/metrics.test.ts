@@ -14,6 +14,7 @@ import {
   recordCost,
   recordMerges,
   recordQa,
+  recordUsage,
   startOfDay,
   type OpsFloorState,
   type OpsHistory,
@@ -207,6 +208,27 @@ describe('cost detail (#15)', () => {
     expect(v.cost!.partialHistory).toBe(true); // the record starts inside the 24h window
     expect(v.cost!.elapsedHours).toBeCloseTo(10, 6);
     expect(v.cost!.byModel[0].usdPerHour).toBeCloseTo(0.15, 6);
+  });
+
+  it('calls the headline a 24-hour total: an older record stays in history but not in the total or rows', () => {
+    const h = emptyHistory();
+    h.since = NOW - 30 * HOUR_MS;
+    h.usage.push(usage('o/a', 'claude-opus', 2, NOW - HOUR_MS), usage('o/a', 'claude-opus', 5, NOW - 30 * HOUR_MS));
+    const v = opsView([floor()], h, NOW);
+    expect(v.cost!.reportedUsd).toBeCloseTo(2, 6); // the 30h-old record is outside the window
+    expect(v.cost!.records).toBe(1);
+    expect(v.cost!.byModel.reduce((s, r) => s + r.usd, 0)).toBeCloseTo(v.cost!.totalUsd, 6); // total matches its rows
+    expect(h.usage).toHaveLength(2); // still in history
+  });
+
+  it('deduplicates a resumed session re-read at the office level so the total never inflates', () => {
+    const h = emptyHistory();
+    const record = usage('o/a', 'claude-opus', 0.0042, NOW - HOUR_MS);
+    recordUsage(h, 'o/a', [record], NOW);
+    recordUsage(h, 'o/a', [record], NOW);
+    const v = opsView([floor()], h, NOW);
+    expect(h.usage).toHaveLength(1); // the re-read record replaces, never appends
+    expect(v.cost!.reportedUsd).toBeCloseTo(0.0042, 6);
   });
 
   it('shows an unavailable model without a verified rate, and keeps estimates out of the reported figure', () => {

@@ -1,4 +1,4 @@
-import { hourlyByModel, resolveUsage, rollup, type RateOverrides, type UsageRecord } from '../shared/cost.ts';
+import { dedupe, hourlyByModel, resolveUsage, rollup, type RateOverrides, type UsageRecord } from '../shared/cost.ts';
 import { prStage } from '../shared/ops.ts';
 import type { AgentRole, AgentStatus, OpsAlarm, OpsCostView, OpsFloor, OpsNumbers, OpsView, PullInfo, QaView } from '../shared/types.ts';
 
@@ -132,6 +132,8 @@ export function recordUsage(h: OpsHistory, repo: string, records: UsageRecord[],
   if (!records.length) return;
   h.since ??= now;
   for (const r of records) h.usage.push({ ...r, repo });
+  // A resumed or restarted session re-reads the same transcript: collapsing by key/session keeps h.usage from growing.
+  h.usage = dedupe(h.usage);
   prune(h, now);
 }
 
@@ -238,13 +240,15 @@ export function floorAlarms(f: OpsFloorState, now: number): OpsAlarm[] {
 }
 
 /**
- * A floor's (or the office's) cost detail: the reported/estimated breakdown, plus the last 24 hours by model with
- * tokens/hour and $/hour. `mine` selects the usage the floor owns; '' is the CEO.
+ * A floor's (or the office's) cost detail: the reported/estimated breakdown over the last 24 hours, plus the same
+ * window by model with tokens/hour and $/hour. `mine` selects the usage the floor owns; '' is the CEO. The total uses
+ * exactly the records `hourlyByModel` counts, so the headline matches the rows under it (and its "last 24h" label).
  */
 export function costView(h: OpsHistory, mine: (repo: string) => boolean, now: number, overrides: RateOverrides = {}): OpsCostView {
-  const resolved = h.usage.filter((r) => mine(r.repo ?? '')).map((r) => resolveUsage(r, overrides));
-  const total = rollup(resolved);
+  const resolved = dedupe(h.usage.filter((r) => mine(r.repo ?? ''))).map((r) => resolveUsage(r, overrides));
   const hourly = hourlyByModel(resolved, now, 24, h.since ?? null);
+  const windowStart = now - DAY_MS;
+  const total = rollup(resolved.filter((r) => r.at !== null && r.at >= windowStart));
   return {
     ...total,
     byModel: hourly.rows,
