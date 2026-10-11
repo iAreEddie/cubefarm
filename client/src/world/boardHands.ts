@@ -269,6 +269,14 @@ const probe = {
     }
     return out;
   },
+  /** Open a card's read-up (CardView) the way E on the sticky would, for QA and Playwright. False when the board has no such card. */
+  open(key: string) {
+    if (!board) return false;
+    const at = findCard(board.cols, key);
+    if (!at) return false;
+    useStore.getState().openOverlay({ kind: 'card', repoId: board.repoId, key: at.card.key, number: at.card.number, pr: !!at.card.prNumber, peel: canPeel(at.col, at.card) });
+    return true;
+  },
 };
 
 if (typeof window !== 'undefined') (window as unknown as Record<string, unknown>).__swarmBoard = probe;

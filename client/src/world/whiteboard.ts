@@ -156,20 +156,3 @@ export function locateCard(cols: KanbanColumns, key: string, number: number, pr:
   }
   return byNumber;
 }
-
-/** The first lines of an issue's body, for the card view: at most `lines` non-blank lines and `chars` characters. */
-export function bodyExcerpt(body: string, lines = 8, chars = 600): { text: string; more: boolean } {
-  const all = (body ?? '').split(/\r?\n/);
-  const out: string[] = [];
-  let kept = 0;
-  let used = 0;
-  let i = 0;
-  for (; i < all.length && kept < lines && used < chars; i++) {
-    const line = all[i];
-    if (line.trim()) kept++;
-    out.push(used + line.length > chars ? `${line.slice(0, Math.max(0, chars - used)).trimEnd()}…` : line);
-    used += line.length + 1;
-  }
-  const more = all.slice(i).some((l) => l.trim()) || used > chars;
-  return { text: out.join('\n').trim(), more };
-}

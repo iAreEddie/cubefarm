@@ -3,7 +3,7 @@ import type { QaStatus, QaView } from '../../../shared/types';
 import type { Agent, Focus, KanbanCard, KanbanColumns } from '../store';
 import { kanbanCapacity, kanbanNoteRect } from './draw';
 import { BOARD } from './layout';
-import { BOARD_TEX, boardToCanvas, bodyExcerpt, canPeel, dependencyPairs, dropTarget, locateCard, noteAt, visibleCount } from './whiteboard';
+import { BOARD_TEX, boardToCanvas, canPeel, dependencyPairs, dropTarget, locateCard, noteAt, visibleCount } from './whiteboard';
 
 const board = (over: Partial<KanbanColumns> = {}): KanbanColumns => ({ backlog: [], progress: [], qa: [], ready: [], merged: [], ...over });
 const issueCard = (n: number): KanbanCard => ({ key: `i-${n}`, number: n, title: `Issue ${n}` });
@@ -159,12 +159,5 @@ describe('reading a card', () => {
     expect(locateCard(cols, 'pr-12', 12, true)).toMatchObject({ col: 'qa' });
     expect(locateCard(cols, 'm-12', 12, true)).toMatchObject({ col: 'qa' });
     expect(locateCard(cols, 'i-13', 13, false)).toBeNull();
-  });
-
-  it('shows the first lines of a body', () => {
-    expect(bodyExcerpt('One\n\nTwo\nThree', 2)).toEqual({ text: 'One\n\nTwo', more: true });
-    expect(bodyExcerpt('One\nTwo', 8)).toEqual({ text: 'One\nTwo', more: false });
-    expect(bodyExcerpt('x'.repeat(20), 8, 10)).toEqual({ text: `${'x'.repeat(10)}…`, more: true });
-    expect(bodyExcerpt('')).toEqual({ text: '', more: false });
   });
 });

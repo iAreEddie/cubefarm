@@ -2,13 +2,13 @@ import { useMemo } from 'react';
 import { blockers } from '../../../shared/issues';
 import { agentsOnRepo, kanbanFor, useStore, type Agent, type KanbanCard } from '../store';
 import { elapsedLabel } from '../qaCard';
-import { bodyExcerpt, cardLabel, canPeel, locateCard } from '../world/whiteboard';
+import { cardLabel, canPeel, locateCard } from '../world/whiteboard';
 import type { Col } from '../world/stickies';
 import { Key } from './Key';
 import { Markdown } from './Markdown';
 import { Panel } from './Panel';
 
-// One whiteboard card up close (E on a sticky): the issue and the first lines of its body, who has it and since when,
+// One whiteboard card up close (E on a sticky): the issue and its full description, who has it and since when,
 // what it waits for, and for a PR its QA round, QA's latest report and checks, and CI. It reads the office's state as
 // it stands (and follows the card as it moves); nothing here asks the server for more.
 
@@ -53,13 +53,15 @@ export function CardView({ repoId, cardKey, number, pr }: { repoId: string; card
   const open = new Set(repo.issues.map((i) => i.number));
   const waits = issue ? blockers(issue.body, open) : [];
   const waiters = issue ? repo.issues.filter((i) => blockers(i.body, open).includes(issue.number)).map((i) => i.number) : [];
-  const excerpt = issue ? bodyExcerpt(issue.body) : null;
+  const description = issue?.body?.trim() ?? '';
   const url = card.url ?? pull?.url ?? issue?.url;
 
   return (
     <Panel
+      key={card.key} /* a new card starts at the top, not at the last one's scroll position */
       className="cardview"
       accent={repo.color}
+      scrollBody
       title={
         <span>
           📌 {cardLabel(card)} {card.title}
@@ -85,10 +87,9 @@ export function CardView({ repoId, cardKey, number, pr }: { repoId: string; card
           Closes #{issue.number}: {issue.title}
         </h4>
       )}
-      {excerpt?.text ? (
+      {description ? (
         <div className="cardview-body">
-          <Markdown text={excerpt.text} />
-          {excerpt.more && <div className="muted small">…</div>}
+          <Markdown text={description} />
         </div>
       ) : (
         !pull && <p className="muted small">The issue has no description.</p>
