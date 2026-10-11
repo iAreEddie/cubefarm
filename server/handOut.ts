@@ -4,6 +4,16 @@
 
 import type { AgentCli, AgentStatus } from '../shared/types.ts';
 
+/**
+ * Whether another pull request may go under test right now. `limit` is settings.maxQaAtOnce: 0 means no limit, and the
+ * default is 1 because the floor shares one machine and every test run pulls the whole suite in. Four PRs in test at
+ * once on an 8-core box was 27 vitest runs and every core pegged (see SwarmSettings.maxQaAtOnce).
+ */
+export function qaHasRoom(statuses: readonly string[], limit: number): boolean {
+  if (!(limit > 0)) return true;
+  return statuses.filter((s) => s === 'testing').length < limit;
+}
+
 /** The parts of the PR's author that decide who gets its fix. */
 export interface FixAuthor {
   status: AgentStatus;
