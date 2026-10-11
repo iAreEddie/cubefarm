@@ -155,6 +155,7 @@ export function sampleDay(base: JournalFrame, midnight: number, rand = seeded(7)
     const pr: PullInfo = {
       number: n,
       title: issue?.title ?? `Fix #${job.n}`,
+      body: `Closes #${job.n}`,
       url: `${repo.url}/pull/${n}`,
       headRefName: `swarm/issue-${job.n}-${slug(a.name)}`,
       state: 'OPEN',

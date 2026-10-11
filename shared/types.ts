@@ -36,6 +36,7 @@ export interface IssueInfo {
 export interface PullInfo {
   number: number;
   title: string;
+  body: string; // the PR's own description (never the linked issue's), so a card can show what the pull request says
   url: string;
   headRefName: string;
   state: 'OPEN' | 'CLOSED' | 'MERGED';

@@ -19,6 +19,7 @@ export function Panel({
   accent,
   className,
   onClose,
+  scrollBody,
 }: {
   title: ReactNode;
   children: ReactNode;
@@ -26,10 +27,18 @@ export function Panel({
   accent?: string;
   className?: string;
   onClose?: () => void;
+  /** Makes the scrolling body a focusable region (a card's long description), so the keyboard can scroll it. */
+  scrollBody?: boolean;
 }) {
   const box = useRef<HTMLDivElement>(null);
+  const body = useRef<HTMLDivElement>(null);
   const titleId = useId();
   useDialogFocus(box);
+  // The dialog takes focus unless something inside already has it; a scroll body wants it, for arrow keys,
+  // PageUp/Down and Home/End. Runs after useDialogFocus, so the body ends up with focus.
+  useEffect(() => {
+    if (scrollBody) body.current?.focus({ preventScroll: true });
+  }, [scrollBody]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -59,7 +68,9 @@ export function Panel({
             ✕
           </button>
         </div>
-        <div className="panel-body">{children}</div>
+        <div ref={body} className="panel-body" tabIndex={scrollBody ? 0 : undefined}>
+          {children}
+        </div>
       </div>
     </div>
   );

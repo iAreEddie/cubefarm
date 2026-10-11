@@ -7,6 +7,7 @@ const dev = (patch: Partial<AgentFacts> = {}): AgentFacts => ({ name: 'Ken', rep
 const pull = (number: number, patch: Partial<PullInfo> = {}): PullInfo => ({
   number,
   title: `PR ${number}`,
+  body: '',
   url: '',
   headRefName: 'b',
   state: 'OPEN',

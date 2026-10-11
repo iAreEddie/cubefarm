@@ -2,9 +2,10 @@
 // and REST as the 3D office. Five tabs: Company (each floor's pipeline), Chat (the CEO), Kanban, Team and Approvals.
 // Nothing 3D loads here until "Open the 3D office".
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
-import { agentsOnRepo, kanbanFor, unreadMessages, useStore } from '../store';
+import { agentsOnRepo, kanbanFor, unreadMessages, useStore, type KanbanCard } from '../store';
 import { CEO_ID } from '../../../shared/types';
 import { officeUpdateChip } from '../officeUpdate';
+import { CardView } from '../ui/CardView';
 import { KanbanView } from '../ui/KanbanView';
 import { NotifySettings } from '../ui/NotifySettings';
 import { AccessibilitySettings } from '../ui/AccessibilitySettings';
@@ -154,8 +155,10 @@ function Company({ go }: { go: (tab: PocketTab, repoId?: string) => void }) {
 
 function Board({ repoId, pick }: { repoId: string | null; pick: (id: string) => void }) {
   const repos = useStore((s) => s.repos);
+  const openOverlay = useStore((s) => s.openOverlay);
   const id = repos.some((r) => r.id === repoId) ? repoId! : repos[0]?.id;
   if (!id) return <p className="muted pk-page">No projects yet.</p>;
+  const openCard = (c: KanbanCard) => openOverlay({ kind: 'card', repoId: id, key: c.key, number: c.number, pr: !!c.prNumber });
   return (
     <div className="pk-page">
       {repos.length > 1 && (
@@ -167,7 +170,7 @@ function Board({ repoId, pick }: { repoId: string | null; pick: (id: string) => 
           ))}
         </div>
       )}
-      <KanbanView key={id} repoId={id} embedded />
+      <KanbanView key={id} repoId={id} embedded onOpenCard={openCard} />
     </div>
   );
 }
@@ -193,6 +196,8 @@ function PocketOverlay() {
   const overlay = useStore((s) => s.overlay);
   if (overlay?.kind === 'terminal' && overlay.agentId !== CEO_ID) return <TerminalView agentId={overlay.agentId} />;
   if (overlay?.kind === 'app') return <AppViewer repoId={overlay.repoId} />;
+  // A Kanban card's read-up (CardView.tsx): pocket mode has no 3D board, so its cards open the same window here.
+  if (overlay?.kind === 'card') return <CardView repoId={overlay.repoId} cardKey={overlay.key} number={overlay.number} pr={overlay.pr} />;
   return null;
 }
 

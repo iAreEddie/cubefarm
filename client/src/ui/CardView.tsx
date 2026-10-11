@@ -2,13 +2,13 @@ import { useMemo } from 'react';
 import { blockers } from '../../../shared/issues';
 import { agentsOnRepo, kanbanFor, useStore, type Agent, type KanbanCard } from '../store';
 import { elapsedLabel } from '../qaCard';
-import { bodyExcerpt, cardLabel, canPeel, locateCard } from '../world/whiteboard';
+import { cardLabel, canPeel, locateCard } from '../world/whiteboard';
 import type { Col } from '../world/stickies';
 import { Key } from './Key';
 import { Markdown } from './Markdown';
 import { Panel } from './Panel';
 
-// One whiteboard card up close (E on a sticky): the issue and the first lines of its body, who has it and since when,
+// One whiteboard card up close (E on a sticky): the issue and its full description, who has it and since when,
 // what it waits for, and for a PR its QA round, QA's latest report and checks, and CI. It reads the office's state as
 // it stands (and follows the card as it moves); nothing here asks the server for more.
 
@@ -47,19 +47,27 @@ export function CardView({ repoId, cardKey, number, pr }: { repoId: string; card
     );
   }
   const { card, col } = at;
-  const pull = card.prNumber ? repo.pulls.find((p) => p.number === card.prNumber) : undefined;
-  const issueNumber = pull ? pull.closesIssues[0] : card.number;
+  // Which card this is comes from the card itself (`prNumber`), not from whether its pull is still on the board: a PR
+  // card whose PR has left the list must not fall back to a same-numbered issue's body. `pull` is that PR's GitHub
+  // state when the board still has it.
+  const isPr = !!card.prNumber;
+  const pull = isPr ? repo.pulls.find((p) => p.number === card.prNumber) : undefined;
+  const issueNumber = isPr ? pull?.closesIssues[0] : card.number;
   const issue = issueNumber ? repo.issues.find((i) => i.number === issueNumber) : undefined;
   const open = new Set(repo.issues.map((i) => i.number));
   const waits = issue ? blockers(issue.body, open) : [];
   const waiters = issue ? repo.issues.filter((i) => blockers(i.body, open).includes(issue.number)).map((i) => i.number) : [];
-  const excerpt = issue ? bodyExcerpt(issue.body) : null;
+  // A PR card shows the pull request's own body, never the linked issue's (the issue body belongs to the issue card);
+  // an issue card shows its own body. This is why the server carries the PR body at all (#25).
+  const description = ((isPr ? pull?.body : issue?.body) ?? '').trim();
   const url = card.url ?? pull?.url ?? issue?.url;
 
   return (
     <Panel
+      key={card.key} /* a new card starts at the top, not at the last one's scroll position */
       className="cardview"
       accent={repo.color}
+      scrollBody
       title={
         <span>
           📌 {cardLabel(card)} {card.title}
@@ -85,13 +93,12 @@ export function CardView({ repoId, cardKey, number, pr }: { repoId: string; card
           Closes #{issue.number}: {issue.title}
         </h4>
       )}
-      {excerpt?.text ? (
+      {description ? (
         <div className="cardview-body">
-          <Markdown text={excerpt.text} />
-          {excerpt.more && <div className="muted small">…</div>}
+          <Markdown text={description} />
         </div>
       ) : (
-        !pull && <p className="muted small">The issue has no description.</p>
+        <p className="muted small">{card.prNumber ? 'This pull request has no description.' : 'The issue has no description.'}</p>
       )}
 
       {card.prNumber && <PrDetails card={card} pull={pull} />}

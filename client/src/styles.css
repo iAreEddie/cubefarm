@@ -1130,6 +1130,7 @@ input.inline:focus {
 .panel {
   width: min(640px, 100%);
   max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px); /* a phone's browser chrome is excluded, so the panel never hides below the fold */
   display: flex;
   flex-direction: column;
   background: var(--paper);
@@ -1142,6 +1143,7 @@ input.inline:focus {
 .panel-wide {
   width: min(1320px, 100%);
   height: calc(100vh - 32px);
+  height: calc(100dvh - 32px);
 }
 .panel-head {
   display: flex;
@@ -1181,6 +1183,15 @@ input.inline:focus {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  overscroll-behavior: contain; /* a wheel or swipe at the end scrolls the panel, not the page behind it */
+}
+.panel-body:focus {
+  outline: none;
+}
+/* The card's description is a focusable scroll body (Panel scrollBody): arrow keys, PageUp/Down and Home/End scroll it. */
+.panel-body:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -4px;
 }
 
 .help h3 {
@@ -1701,6 +1712,19 @@ input.inline:focus {
 }
 .kcard-title a {
   font-weight: 700;
+}
+/* Pocket mode's Kanban cards open the read-up: a small button after the title. */
+.kcard-open {
+  margin-left: 6px;
+  padding: 1px 7px;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  border: 1.5px solid var(--ink);
+  border-radius: 999px;
+  background: var(--paper);
+  color: inherit;
+  cursor: pointer;
 }
 .kcard-foot {
   display: flex;

@@ -32,6 +32,7 @@ function pull(n: number, state: PullInfo['state'] = 'OPEN', patch: Partial<PullI
   return {
     number: n,
     title: `PR ${n}`,
+    body: '',
     url: `https://github.com/o/r/pull/${n}`,
     headRefName: `swarm/issue-${n}-ada`,
     state,
