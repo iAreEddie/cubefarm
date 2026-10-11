@@ -113,7 +113,7 @@ export function HireSetupFields({ value, onChange, disabled }: { value: HireSetu
           onChange={(e) => set({ model: e.target.value })}
         />
         <datalist id={`${id}-models`}>
-          {modelSuggestions(cli).map((m) => (
+          {modelSuggestions(cli, clis, settings.defaultModel).map((m) => (
             <option key={m} value={m} />
           ))}
         </datalist>

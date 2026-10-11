@@ -74,6 +74,7 @@ export function CliSelect({ agent, id, style }: FieldProps) {
 
 export function ModelInput({ agent, id, className = 'inline', style }: FieldProps) {
   const settings = useStore((s) => s.settings);
+  const clis = useStore((s) => s.clis);
   const listId = useId();
   const cli = workerCli(agent, settings);
   return (
@@ -85,13 +86,13 @@ export function ModelInput({ agent, id, className = 'inline', style }: FieldProp
         style={style}
         list={listId}
         defaultValue={agent.model}
-        placeholder={(agent.role === 'ceo' ? CLAUDE_MODELS[0] : effectiveModel('', cli, settings, CLAUDE_MODELS[0])) || 'agent default'}
+        placeholder={effectiveModel('', cli, settings, CLAUDE_MODELS[0]) || 'agent default'}
         title={agent.role === 'ceo' ? "The CEO's model" : "Their model ('' = the default for their coding agent)"}
         aria-label={id ? undefined : 'Model'}
         onBlur={(e) => e.target.value !== agent.model && void save(agent.id, { model: e.target.value })}
       />
       <datalist id={listId}>
-        {modelSuggestions(cli).map((m) => (
+        {modelSuggestions(cli, clis, settings.defaultModel).map((m) => (
           <option key={m} value={m} />
         ))}
       </datalist>
@@ -279,7 +280,7 @@ export function PromptPreview({ agent }: { agent: Agent }) {
   );
 }
 
-/** The ⚙️ Setup section of an agent's panel. The CEO always runs Claude Code, so they only get model and effort. */
+/** The ⚙️ Setup section of an agent's panel. The CEO runs the office default unless the manager picks one for it. */
 export function AgentSetup({ agent }: { agent: Agent }) {
   const terminal = useStore((s) => s.settings.runtime === 'terminal');
   const id = useId();
@@ -307,7 +308,7 @@ export function AgentSetup({ agent }: { agent: Agent }) {
             <LookSelect agent={agent} id={`${id}-look`} />
           </label>
         )}
-        {!ceo && terminal && (
+        {terminal && (
           <label className="field" htmlFor={`${id}-cli`}>
             <span>Coding agent</span>
             <CliSelect agent={agent} id={`${id}-cli`} />
