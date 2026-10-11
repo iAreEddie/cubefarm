@@ -556,22 +556,26 @@ export default async function CubefarmPlugin({ client } = {}) {
   let root;
   const post = (body) =>
     fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(3000) }).catch(() => {});
-  const lastReply = async (id) => {
+  const lastParts = async (id) => {
     try {
       const res = await client.session.messages({ path: { id } });
       const reply = (res?.data ?? []).filter((m) => m?.info?.role === 'assistant').pop();
-      return (reply?.parts ?? []).filter((p) => p?.type === 'text').map((p) => p.text).join('\n').trim();
+      return reply?.parts ?? [];
     } catch {
-      return '';
+      return [];
     }
   };
+  const lastReply = async (id) => (await lastParts(id)).filter((p) => p?.type === 'text').map((p) => p.text).join('\n').trim();
+  // The turn's reasoning text (OpenCode calls these 'reasoning' parts), so the office can show its thoughts.
+  const lastReasoning = async (id) => (await lastParts(id)).filter((p) => p?.type === 'reasoning' && typeof p.text === 'string').map((p) => p.text);
   return {
     event: async ({ event }) => {
       const props = event?.properties ?? {};
       if (event?.type === 'session.created' && !props.info?.parentID && !root) root = props.info?.id;
       const sessionID = props.sessionID ?? props.info?.id;
       if (event?.type === 'session.idle' && (!root || sessionID === root)) {
-        post({ hook_event_name: 'TurnComplete', session_id: sessionID ?? null, last_assistant_message: sessionID ? await lastReply(sessionID) : '' });
+        const reasoning = sessionID ? await lastReasoning(sessionID) : [];
+        post({ hook_event_name: 'TurnComplete', session_id: sessionID ?? null, last_assistant_message: sessionID ? await lastReply(sessionID) : '', reasoning });
       }
       if (event?.type === 'session.error') post({ hook_event_name: 'TurnError', session_id: sessionID ?? null, error: String(props.error?.data?.message ?? props.error?.name ?? 'error') });
     },

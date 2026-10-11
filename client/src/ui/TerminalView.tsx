@@ -1,10 +1,12 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { CareerCard } from './CareerCard';
 import { api } from '../api';
 import { isBusy, kanbanFor, agentsOnRepo, useStore } from '../store';
 import { AgentSetup } from './AgentSettings';
 import { confirmDialog } from './Confirm';
 import { LiveTerminal } from './LiveTerminal';
+import { ChatView } from './ChatView';
+import { thoughtsSupported } from '../../../shared/chat';
 import { effectiveModel } from '../../../shared/models';
 import { assignChoices } from '../pocket/pocketData';
 import { agentLabel, workerCli } from './floorRows';
@@ -47,9 +49,8 @@ export function TerminalView({ agentId }: { agentId: string }) {
   const [busy, setBusy] = useState(false);
   const [showSetup, setShowSetup] = useState(false);
   const [showCareer, setShowCareer] = useState(false);
+  const [view, setView] = useState<'chat' | 'terminal'>('chat');
   const [, tick] = useState(0);
-  const scroller = useRef<HTMLDivElement>(null);
-  const stick = useRef(true);
   // The browser pane shows the last screenshot that loaded, never a broken image. The loaded <img> itself goes in
   // the pane, so showing it never asks the server again.
   const shotView = useRef<HTMLDivElement>(null);
@@ -71,10 +72,6 @@ export function TerminalView({ agentId }: { agentId: string }) {
   useEffect(() => {
     shotView.current?.replaceChildren(...(shot?.agentId === agentId ? [shot.img] : []));
   }, [shot, agentId, agent?.hasScreenshot]);
-  useLayoutEffect(() => {
-    const el = scroller.current;
-    if (el && stick.current) el.scrollTop = el.scrollHeight;
-  }, [log.length]);
 
   const qaRecords = useStore((s) => s.qa);
   const cols = useMemo(() => (repo ? kanbanFor(repo, agentsOnRepo(allAgents, repo.id), qaRecords) : null), [repo, allAgents, qaRecords]);
@@ -102,6 +99,8 @@ export function TerminalView({ agentId }: { agentId: string }) {
   };
   const working = isBusy(agent);
   const cli = workerCli(agent, settings);
+  const thoughts = thoughtsSupported(cli);
+  const busyLine = working ? `✻ ${agent.status === 'preparing' ? (agent.currentTool ?? 'Setting up worktree') : toolVerb(agent.currentTool) || 'Thinking'}… (${elapsed(agent.startedAt, null)})` : null;
   const issueUrl = agent.issueNumber ? `https://github.com/${repo.fullName}/issues/${agent.issueNumber}` : null;
   const canMessage = working || (agent.task !== 'qa' && !!agent.branch && agent.status !== 'idle');
   const qaRec = agent.prNumber ? qaRecords[`${repo.id}#${agent.prNumber}`] : undefined;
@@ -199,24 +198,25 @@ export function TerminalView({ agentId }: { agentId: string }) {
 
       <div className={`term-split ${agent.hasScreenshot ? 'term-split-2' : ''}`}>
         {agent.terminal ? (
-          <LiveTerminal agentId={agent.id} />
-        ) : (
-          <div
-            className="term"
-            ref={scroller}
-            onScroll={(e) => {
-              const el = e.currentTarget;
-              stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-            }}
-          >
-            {log.length === 0 && <div className="term-line term-system">(no output yet)</div>}
-            {log.map((l) => (
-              <div key={l.id} className={`term-line term-${l.kind}`}>
-                {l.text || ' '}
-              </div>
-            ))}
-            {working && <div className="term-line term-spin">✻ {agent.status === 'preparing' ? (agent.currentTool ?? 'Setting up worktree') : toolVerb(agent.currentTool) || 'Thinking'}… ({elapsed(agent.startedAt, null)})</div>}
+          <div className="term-pane">
+            <div className="view-tabs" role="tablist" aria-label={`${agent.name}'s conversation or terminal`}>
+              <button role="tab" aria-selected={view === 'chat'} className={`view-tab ${view === 'chat' ? 'view-tab-on' : ''}`} onClick={() => setView('chat')}>
+                💬 Chat
+              </button>
+              <button role="tab" aria-selected={view === 'terminal'} className={`view-tab ${view === 'terminal' ? 'view-tab-on' : ''}`} onClick={() => setView('terminal')}>
+                ⌨️ Terminal
+              </button>
+            </div>
+            <div className="term-pane-body">
+              {view === 'chat' ? (
+                <ChatView key={agent.id} agentId={agent.id} lines={log} thoughtsSupported={thoughts} cliLabel={agentLabel(agent, settings, clis)} busyLine={busyLine} onSetup={() => setView('terminal')} />
+              ) : (
+                <LiveTerminal agentId={agent.id} />
+              )}
+            </div>
           </div>
+        ) : (
+          <ChatView key={agent.id} agentId={agent.id} lines={log} thoughtsSupported={thoughts} cliLabel={agentLabel(agent, settings, clis)} busyLine={busyLine} />
         )}
         {agent.hasScreenshot && (
           <div className="browser">

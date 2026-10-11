@@ -16,6 +16,7 @@ import {
   resultText,
   screenshotFile,
   summariseResult,
+  THOUGHT_MAX,
   tidyPaths,
   todoLines,
   type LogEntry,
@@ -24,6 +25,7 @@ import {
   type SessionOptions,
   type SessionResult,
 } from './agentRunner.ts';
+import { claudeThinking, opencodeReasoning, readNewLines } from './thoughts.ts';
 import type { OfficeTools } from './ceo.ts';
 import type { AgentTerminal } from './terminal.ts';
 import type { AgentCli } from '../shared/types.ts';
@@ -419,6 +421,39 @@ export function startCliSession(opts: SessionOptions, callbacks: SessionCallback
   const cb: SessionCallbacks = { ...callbacks };
   const log = (entries: LogEntry[]) => entries.length && cb.log(entries);
 
+  // The CLI's own reasoning text (#26): Claude Code writes it to its conversation file, so the office follows that file
+  // and logs each thinking block once. It is polled, not just read on hooks, so a block that lands between hooks — or
+  // on the last turn before the process exits — is still picked up. Only the appended bytes are read.
+  let thoughtPath = '';
+  let thoughtOffset = 0;
+  let thoughtTimer: NodeJS.Timeout | undefined;
+  const seenThoughts = new Set<string>();
+  const pollThoughts = () => {
+    if (cli !== 'claude' || !thoughtPath || done) return;
+    const { lines, offset } = readNewLines(thoughtPath, thoughtOffset);
+    thoughtOffset = offset;
+    const out: LogEntry[] = [];
+    for (const line of lines) {
+      for (const text of claudeThinking(line)) {
+        if (seenThoughts.has(text)) continue;
+        seenThoughts.add(text);
+        out.push({ kind: 'thinking', text: clip(text, THOUGHT_MAX) });
+      }
+    }
+    if (out.length) log(out);
+  };
+  /** A hook carries the conversation's path (Claude Code only); follow it and read whatever is new. */
+  const noteTranscript = (b: Record<string, unknown>) => {
+    if (cli !== 'claude' || done) return;
+    const p = typeof b.transcript_path === 'string' ? b.transcript_path : '';
+    if (p && p !== thoughtPath) {
+      thoughtPath = p;
+      thoughtOffset = 0;
+    }
+    pollThoughts();
+  };
+  if (cli === 'claude') thoughtTimer = setInterval(pollThoughts, 1500);
+
   /** Codex and OpenCode don't report tool results: pass on the screenshots their browser saved instead. all: the last look. */
   const collectShots = (all = false) => {
     const l = live;
@@ -436,10 +471,12 @@ export function startCliSession(opts: SessionOptions, callbacks: SessionCallback
   /** The session is over. A CLI kept alive (keepAlive) that ended its turn normally stays at its prompt (keep); others close. */
   const finish = (r: Omit<SessionResult, 'costUsd' | 'turns'>, keep = false) => {
     if (done) return;
+    pollThoughts(); // a last look: the turn's final reasoning may have just landed in the transcript
     done = true;
     for (const t of [finishTimer, bootTimer]) clearTimeout(t);
     clearInterval(screenTimer);
     clearInterval(shotTimer);
+    clearInterval(thoughtTimer);
     collectShots(true);
     if (term.onInput === watchKeys) term.onInput = null;
     const l = live;
@@ -510,6 +547,7 @@ export function startCliSession(opts: SessionOptions, callbacks: SessionCallback
   const hook = (b: Record<string, unknown>): Record<string, unknown> => {
     const event = String(b.hook_event_name ?? '');
     const sub = typeof b.agent_id === 'string' && b.agent_id !== ''; // a subagent's call: kept off the log
+    noteTranscript(b);
     if (cli === 'claude' && !sub && b.session_id !== kept) {
       const id = resumableSession(b, fs.existsSync);
       if (id) {
@@ -600,6 +638,8 @@ export function startCliSession(opts: SessionOptions, callbacks: SessionCallback
             remember(live);
           }
         }
+        // OpenCode's plugin hands over the turn's reasoning parts before its reply (#26).
+        for (const r of opencodeReasoning(b.reasoning)) log([{ kind: 'thinking', text: clip(r, THOUGHT_MAX) }]);
         const text = String(b.last_assistant_message ?? '').trim();
         turns += 1;
         if (text) {

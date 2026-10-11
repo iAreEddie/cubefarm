@@ -197,11 +197,13 @@ function issueScript(opts: SessionOptions, cb: SessionCallbacks, issueNumber: nu
   const hue = (issueNumber * 67) % 360;
   const file = ['src/App.tsx', 'src/components/TodoList.tsx', 'src/api/routes.ts', 'src/styles.css'][issueNumber % 4];
   const port = 5200 + (issueNumber % 50);
+  // Reasoning text the panel shows as a collapsible thought section; consecutive lines stream into one section.
+  const thought = (...texts: string[]): LogEntry[] => texts.map((text) => ({ kind: 'thinking' as const, text }));
   return [
     [{ kind: 'text', text: `● I'll start by getting familiar with the codebase for "${issueTitle}".` }],
     [{ kind: 'tool', tool: 'Glob', text: '⏺ Glob src/**/*.{ts,tsx}' }, { kind: 'result', text: '  ⎿ Found 23 files' }],
     [{ kind: 'tool', tool: 'Read', text: `⏺ Read ${file}` }, { kind: 'result', text: '  ⎿ Read 184 lines' }],
-    [{ kind: 'thinking', text: '✻ Thinking…' }],
+    thought('The state lives in a single hook, so I can extend it without touching every caller.', 'I want to find every place it is read before I change its shape.'),
     [
       { kind: 'tool', tool: 'TodoWrite', text: '⏺ Update todo list' },
       { kind: 'result', text: '  ◐ Understand current behaviour' },
@@ -210,6 +212,7 @@ function issueScript(opts: SessionOptions, cb: SessionCallbacks, issueNumber: nu
       { kind: 'result', text: '  ☐ Verify in the browser' },
     ],
     [{ kind: 'tool', tool: 'Grep', text: '⏺ Grep "useTodos"' }, { kind: 'result', text: '  ⎿ Found 6 matches in 4 files' }],
+    thought('Six call sites, all in the same folder.', 'Keeping the old return shape means nothing else has to change.'),
     [{ kind: 'text', text: "● The state lives in a single hook. I'll extend it and keep the API backwards compatible." }],
     [{ kind: 'tool', tool: 'Edit', text: `⏺ Edit ${file}` }, { kind: 'result', text: '  ⎿ Updated' }],
     [{ kind: 'tool', tool: 'Write', text: '⏺ Write src/__tests__/feature.test.ts' }, { kind: 'result', text: '  ⎿ Saved' }],
@@ -225,6 +228,9 @@ function issueScript(opts: SessionOptions, cb: SessionCallbacks, issueNumber: nu
     () => cb.screenshot(Buffer.from(screenshotSvg(issueTitle, `localhost:${port}`, hue)), 'image/svg+xml'),
     [{ kind: 'tool', tool: 'mcp__playwright__browser_take_screenshot', text: '⏺ 🌐 take_screenshot' }, { kind: 'result', text: '  ⎿ Took a screenshot of the current page' }],
     [{ kind: 'text', text: '● Looks right in the browser. A production build, then the PR.' }],
+    // Two steps in a row: the section keeps streaming in more reasoning, so its expansion state must hold.
+    thought('The screenshot shows the layout holding at 375px.', 'The empty state still shifts the footer, though: the list has no min-height.'),
+    thought('A min-height on the list keeps the footer put in both states.'),
     [{ kind: 'tool', tool: 'Bash', text: '⏺ $ npm run build' }, { kind: 'result', text: '  ⎿ ✓ built in 1.62s' }],
     [{ kind: 'tool', tool: 'Bash', text: `⏺ $ git commit -am "feat: ${issueTitle.toLowerCase()}"` }, { kind: 'result', text: `  ⎿ [${branch} 3f2a91c] feat: ${issueTitle.toLowerCase()}` }],
     [{ kind: 'tool', tool: 'Bash', text: '⏺ $ git push -u origin HEAD' }, { kind: 'result', text: '  ⎿ branch set up to track origin' }],
@@ -252,6 +258,7 @@ function qaScript(cb: SessionCallbacks, pr: number, title: string, round: number
       ];
   return [
     [{ kind: 'text', text: `● Testing PR #${pr} "${title}" (round ${round}). ${checks}. First, the acceptance criteria from the issue.` }],
+    [{ kind: 'thinking', text: 'The change touches the toolbar, so the 375px layout is the risky part.' }],
     [{ kind: 'tool', tool: 'Bash', text: '⏺ $ git diff origin/main...HEAD --stat' }, { kind: 'result', text: '  ⎿  3 files changed, 82 insertions(+), 9 deletions(-)' }],
     ...verify,
     [{ kind: 'tool', tool: 'Bash', text: `⏺ $ npm run preview -- --port ${port} &` }, { kind: 'result', text: `  ⎿ Local: http://localhost:${port}/` }],
@@ -278,6 +285,7 @@ function fixScript(pr: number, pushes: boolean, nudged: boolean): Step[] {
   }
   return [
     [{ kind: 'text', text: `● Reading the QA report for PR #${pr}. The toolbar overflows on phones; I'll let it wrap.` }],
+    [{ kind: 'thinking', text: 'A flex-wrap on the toolbar should keep every button reachable at 375px.' }],
     [{ kind: 'tool', tool: 'Read', text: '⏺ Read src/styles.css' }, { kind: 'result', text: '  ⎿ Read 212 lines' }],
     [{ kind: 'tool', tool: 'Edit', text: '⏺ Edit src/styles.css' }, { kind: 'result', text: '  ⎿ Updated' }],
     [{ kind: 'tool', tool: 'Bash', text: '⏺ $ npm test -- --run' }, { kind: 'result', text: '  ⎿ Test Files  8 passed (8)' }],
