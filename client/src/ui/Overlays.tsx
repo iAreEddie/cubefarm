@@ -348,6 +348,15 @@ function Help({ tab: initial }: { tab?: HelpTab }) {
             Desks tell their owner's story: a plaque on the monitor for every merged PR, a gold star for ten first-time QA passes, and a plant, a photo and a desk toy that arrive with time on the team.
             Look at a desk for a moment to see its career card (or open <b>🏅 Career</b> in their panel); the console's Team tab compares everyone.
           </p>
+          <h3>Browser monitors</h3>
+          <p>
+            Buy a <b>📺 Browser monitor</b> (200 coins) at the kiosk and carry it from the floor's decor box to a wide, clear wall spot (over the kitchenette and beside the fixed screens don't have the room). Press{' '}
+            <Key action="interact" /> on it to use it: the office lets go of the mouse and the keys go to the page. Type an address and press <b>Go</b> to open an http(s) page, or paste a <b>YouTube</b> watch, youtu.be or embed
+            link to play the video in its own player, with play/pause, seeking, volume/mute and fullscreen. <b>Back</b> and <b>Forward</b> walk back through the addresses you entered (a page's own links aren't visible to us),{' '}
+            <b>⟳</b> reloads, <b>⌂</b> is the home screen and <b>⏻</b> powers the screen off (it stops the sound). <b>Close</b> or <kbd>Esc</kbd> gives you back to walking: the video carries on playing on the wall until you power it
+            off, put it away or leave the floor. Some sites refuse to be shown inside another page: the monitor says so and offers <b>Open in browser</b>. It keeps its own last address and volume, even after moving it to another spot or
+            reloading the office.
+          </p>
           <h3>The whiteboard</h3>
           <p>
             <b>Backlog</b>: open issues nobody has picked up. <b>In progress</b>: agents building issues. <b>In QA</b>: being tested or fixed. <b>Ready to merge</b>: QA passed, waiting for you. Press{' '}

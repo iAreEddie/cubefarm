@@ -8,7 +8,9 @@ import {
   catalogueItem,
   COFFEE_ADDICT,
   COINS,
+  compatibleSlots,
   DECOR_SLOTS,
+  DEFAULT_MONITOR,
   isDecorItem,
   priceOf,
   slotKind,
@@ -122,7 +124,18 @@ function markSeen(s: LedgerState, key: string) {
 }
 
 function floorOf(s: LedgerState, repoId: string): FloorLedger {
-  return (s.floors[repoId] ??= { coins: 0, earned: 0, merges: 0, owned: {}, placed: {}, firstPr: null, streak: [] });
+  return (s.floors[repoId] ??= { coins: 0, earned: 0, merges: 0, owned: {}, placed: {}, monitors: {}, monitorSlots: {}, firstPr: null, streak: [] });
+}
+
+// A browser monitor's stable instance id (#24): made once, at purchase, so moving or storing the screen carries its
+// address and volume with it and no other monitor ever inherits them.
+let monitorSeq = 0;
+const newMonitorId = () => `mon-${Date.now().toString(36)}-${(monitorSeq++).toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+
+/** The first of the floor's monitors not standing in a slot: the one next out of the decor box. */
+function freeMonitor(floor: FloorLedger): string | null {
+  const placed = new Set(Object.values(floor.monitorSlots));
+  return Object.keys(floor.monitors).find((id) => !placed.has(id)) ?? null;
 }
 
 /** Someone's career, noted as changed; null for anyone not on the team (let go, or never hired). */
@@ -354,6 +367,7 @@ export function buy(s: LedgerState, repoId: string, item: unknown): CommandResul
   if (floor.coins < price) return { error: `${def.name} costs ${price} coins; this floor has ${floor.coins}` };
   floor.coins -= price;
   floor.owned[item] = (floor.owned[item] ?? 0) + 1;
+  if (item === 'browser') floor.monitors[newMonitorId()] = { ...DEFAULT_MONITOR };
   return { effects: { ...fx(), changed: true, progress: true }, price };
 }
 
@@ -369,19 +383,40 @@ export function place(s: LedgerState, repoId: string, repoName: string, x: { ite
   if (x.slot === null) {
     if (x.from === null) return { error: 'Nothing to put away' };
     delete floor.placed[x.from];
+    delete floor.monitorSlots[x.from];
     return { effects: { ...fx(), changed: true, progress: true } };
   }
   const kind = slotKind(x.slot);
   if (!kind) return { error: `There's no decoration spot "${x.slot}"` };
   if (kind !== catalogueItem(item)!.kind) return { error: `The ${catalogueItem(item)!.name.toLowerCase()} doesn't go there` };
+  if (item === 'browser' && !compatibleSlots('browser').includes(x.slot)) return { error: "The browser monitor needs a wide, clear wall it fits: the wall spots over the kitchenette and beside the fixed screens don't have the room" };
   if (floor.placed[x.slot] && x.slot !== x.from) return { error: 'Something already stands there' };
   if (x.from === null && stored(floor, item) < 1) return { error: `This floor's decor box has no ${catalogueItem(item)!.name.toLowerCase()}` };
+  if (item === 'browser') {
+    // The screen carries its own settings between slots (#24); a fresh one comes out of the box.
+    const from = x.from;
+    const id = (from !== null ? floor.monitorSlots[from] : null) ?? (from === null ? freeMonitor(floor) : null) ?? newMonitorId();
+    if (from !== null) delete floor.monitorSlots[from];
+    floor.monitors[id] ??= { ...DEFAULT_MONITOR };
+    floor.monitorSlots[x.slot] = id;
+  }
   if (x.from !== null) delete floor.placed[x.from];
   floor.placed[x.slot] = item;
   const out: Effects = { ...fx(), changed: true, progress: true };
   unlock(s, out, 'interior-designer', `${catalogueItem(item)!.name} on ${repoName}`, at);
   if (DECOR_SLOTS.every((d) => floor.placed[d.id])) unlock(s, out, 'fully-furnished', repoName, at);
   return { effects: out };
+}
+
+/** Remember a placed browser monitor's last address and volume (#24), by its stable instance id. */
+export function saveMonitor(s: LedgerState, repoId: string, id: string, patch: { url?: unknown; volume?: unknown; muted?: unknown }): CommandResult {
+  const floor = floorOf(s, repoId);
+  const m = floor.monitors[id];
+  if (!m) return { error: 'No such monitor on this floor' };
+  if (typeof patch.url === 'string') m.url = patch.url.slice(0, 2048);
+  if (typeof patch.volume === 'number' && Number.isFinite(patch.volume)) m.volume = Math.max(0, Math.min(100, Math.round(patch.volume)));
+  if (typeof patch.muted === 'boolean') m.muted = patch.muted;
+  return { effects: { ...fx(), changed: true, progress: true } };
 }
 
 /** Demo only: coins for QA to spend. */
@@ -409,7 +444,9 @@ export function progressView(s: LedgerState, repoIds: string[]): ProgressView {
   const floors: Record<string, FloorProgressView> = {};
   for (const id of repoIds) {
     const f = s.floors[id];
-    floors[id] = f ? { coins: f.coins, earned: f.earned, merges: f.merges, owned: f.owned, placed: f.placed, firstPr: f.firstPr } : { coins: 0, earned: 0, merges: 0, owned: {}, placed: {}, firstPr: null };
+    floors[id] = f
+      ? { coins: f.coins, earned: f.earned, merges: f.merges, owned: f.owned, placed: f.placed, monitors: f.monitors, monitorSlots: f.monitorSlots, firstPr: f.firstPr }
+      : { coins: 0, earned: 0, merges: 0, owned: {}, placed: {}, monitors: {}, monitorSlots: {}, firstPr: null };
   }
   return { floors, achievements: s.achievements, coffees: s.coffees, merges: s.merges };
 }
@@ -441,7 +478,30 @@ export function loadLedger(raw: unknown): LedgerState {
     const owned: FloorLedger['owned'] = {};
     for (const [item, n] of Object.entries(obj(x.owned))) if (isDecorItem(item) && num(n) > 0) owned[item] = num(n);
     const placed: FloorLedger['placed'] = {};
-    for (const [slot, item] of Object.entries(obj(x.placed))) if (slotKind(slot) && isDecorItem(item) && slotKind(slot) === catalogueItem(item)!.kind) placed[slot] = item;
+    for (const [slot, item] of Object.entries(obj(x.placed))) {
+      if (!slotKind(slot) || !isDecorItem(item) || slotKind(slot) !== catalogueItem(item)!.kind) continue;
+      if (item === 'browser' && !compatibleSlots('browser').includes(slot)) continue; // a monitor only hangs on a wall it fits
+      placed[slot] = item;
+    }
+    // Browser monitors (#24): their settings by instance id, and which instance stands in which slot. Bad links drop.
+    const monitors: FloorLedger['monitors'] = {};
+    for (const [monId, raw] of Object.entries(obj(x.monitors))) {
+      if (!monId) continue;
+      const y = obj(raw);
+      monitors[monId] = { url: typeof y.url === 'string' ? y.url.slice(0, 2048) : '', volume: Math.max(0, Math.min(100, Math.round(num(y.volume, DEFAULT_MONITOR.volume)))), muted: y.muted === true };
+    }
+    const monitorSlots: FloorLedger['monitorSlots'] = {};
+    for (const [slot, monId] of Object.entries(obj(x.monitorSlots))) {
+      if (placed[slot] !== 'browser' || typeof monId !== 'string' || !monitors[monId]) continue;
+      monitorSlots[slot] = monId;
+    }
+    // An older file with a monitor standing but no instance of its own: give it one, so nothing is lost.
+    for (const [slot, item] of Object.entries(placed)) {
+      if (item !== 'browser' || monitorSlots[slot]) continue;
+      const monId = newMonitorId();
+      monitors[monId] = { ...DEFAULT_MONITOR };
+      monitorSlots[slot] = monId;
+    }
     const first = obj(x.firstPr);
     s.floors[id] = {
       coins: num(x.coins),
@@ -449,6 +509,8 @@ export function loadLedger(raw: unknown): LedgerState {
       merges: num(x.merges),
       owned,
       placed,
+      monitors,
+      monitorSlots,
       firstPr: typeof first.n === 'number' ? { n: first.n, title: typeof first.title === 'string' ? first.title : '' } : null,
       streak: Array.isArray(x.streak) ? x.streak.filter((t): t is number => typeof t === 'number') : [],
     };

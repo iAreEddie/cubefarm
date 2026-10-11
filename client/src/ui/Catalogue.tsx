@@ -9,7 +9,7 @@ import { SLOT_NAMES } from '../world/decor/decor';
 import { Key } from './Key';
 import { Panel } from './Overlays';
 
-const EMPTY: FloorProgressView = { coins: 0, earned: 0, merges: 0, owned: {}, placed: {}, firstPr: null };
+const EMPTY: FloorProgressView = { coins: 0, earned: 0, merges: 0, owned: {}, placed: {}, monitors: {}, monitorSlots: {}, firstPr: null };
 
 /** How many decorations of a kind the floor owns, against how many slots it has for them. */
 function room(floor: FloorProgressView, kind: DecorKind) {

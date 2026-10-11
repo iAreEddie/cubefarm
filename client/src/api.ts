@@ -152,6 +152,8 @@ export const api = {
   // office progression (#210)
   buyDecor: (repoId: string, item: DecorItem) => call<ProgressView>('POST', `${r(repoId)}/decor/buy`, { item }),
   placeDecor: (repoId: string, body: { item: DecorItem; slot: string | null; from: string | null }) => call<ProgressView>('POST', `${r(repoId)}/decor/place`, body),
+  /** Remember a placed browser monitor's address and volume (#24). No toast: a failed save just doesn't persist. */
+  saveMonitor: (repoId: string, id: string, patch: { url?: string; volume?: number; muted?: boolean }) => call<ProgressView>('POST', `${r(repoId)}/monitors/${encodeURIComponent(id)}`, patch, false),
   drankCoffee: (id: string) => call<{ coffees: number }>('POST', '/api/progress/coffee', { id }, false),
   /** Demo only: coins for a floor, or days of tenure for one agent (or everyone). */
   /** Show a path from a message selected in the PC's file manager. */

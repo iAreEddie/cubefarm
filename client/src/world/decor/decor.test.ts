@@ -104,4 +104,11 @@ describe('placing', () => {
     expect(openSlots('neon', placed, 'w-west')).toEqual(['w-west', 'w-south-e', 'w-north-e', 'w-kitchen']);
     expect(openSlots('rug', placed, null).every((id) => slotKind(id) === 'rug')).toBe(true);
   });
+
+  it('offers a browser monitor only the wide walls it fits (#24)', () => {
+    expect(openSlots('browser', {}, null)).toEqual(['w-west', 'w-south-e', 'w-north-e']);
+    expect(openSlots('browser', { 'w-west': 'neon' }, null)).toEqual(['w-south-e', 'w-north-e']);
+    expect(openSlots('browser', { 'w-west': 'browser' }, 'w-west')).toContain('w-west');
+    expect(decorRect('w-west', 'browser')).toBeNull(); // flat on the wall: nothing to walk around
+  });
 });

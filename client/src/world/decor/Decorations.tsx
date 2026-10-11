@@ -12,6 +12,7 @@ import { useCanvasTexture, useInteractable } from '../interact';
 import { DECOR_BOX } from '../layout';
 import { glass, shade } from '../materials';
 import { decorName } from './actions';
+import { BrowserScreen } from './BrowserScreen';
 import { decorSize, openSlots, placement } from './decor';
 import * as M from './models';
 import { vertexGlow, vertexToon } from './parts';
@@ -314,6 +315,8 @@ function ItemLook({ item, slot, repo, floor }: { item: DecorItem; slot: string; 
       return <mesh geometry={M.pingpongModel()} material={vertexToon} castShadow receiveShadow />;
     case 'arcade':
       return <Arcade accent={repo.color} />;
+    case 'browser':
+      return floor ? <BrowserScreen repo={repo} slot={slot} floor={floor} /> : null;
     case 'rug': {
       const s = decorSize('rug', slot);
       return <mesh geometry={M.rugModel(s.w, s.d, shade(repo.color, 0.12))} material={vertexToon} receiveShadow />;
@@ -334,7 +337,9 @@ const Placed = memo(function Placed({ slot, item, repo, floor, carrying }: { slo
       ? null
       : item === 'arcade'
         ? { id: `decor:${slot}`, label: "Play the arcade (your phone's games) · move it from the 📦 decor box", action: { kind: 'decoration', op: 'arcade', slot } }
-        : { id: `decor:${slot}`, label: `Pick up the ${name} to move it`, action: { kind: 'decoration', op: 'take', slot } },
+        : item === 'browser'
+          ? { id: `decor:${slot}`, label: 'Use the browser monitor · move it from the 📦 decor box', action: { kind: 'decoration', op: 'browser', slot } }
+          : { id: `decor:${slot}`, label: `Pick up the ${name} to move it`, action: { kind: 'decoration', op: 'take', slot } },
     4.5,
   );
   if (!p) return null;

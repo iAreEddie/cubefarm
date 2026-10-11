@@ -311,6 +311,8 @@ app.post('/api/demo/proposals', route((req) => swarm.demoPropose(req.body?.kind,
 // tenure for QA.
 app.post('/api/repos/:repo/decor/buy', route((req) => swarm.buyDecoration(repoId(req), req.body?.item)));
 app.post('/api/repos/:repo/decor/place', route((req) => swarm.placeDecoration(repoId(req), req.body ?? {})));
+// A placed browser monitor remembers its last address and volume (#24).
+app.post('/api/repos/:repo/monitors/:id', route((req) => swarm.saveMonitor(repoId(req), req.params.id, req.body ?? {})));
 app.post('/api/progress/coffee', route((req) => swarm.drankCoffee(req.body?.id)));
 app.post('/api/progress/demo', route((req) => swarm.demoProgress(req.body ?? {})));
 

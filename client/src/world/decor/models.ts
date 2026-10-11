@@ -136,6 +136,10 @@ export const arcadeModel = (accent: string) =>
     ];
   });
 
+/** A wall-mounted browser monitor: a slim dark bezel around the glass (the live page is drawn over it as DOM). */
+export const browserModel = (w: number, h: number) =>
+  model(`browser:${w}x${h}`, () => [box(w + 0.06, h + 0.06, 0.05, '#20222e', [0, 0, 0.025]), box(w, h, 0.052, '#0b0c12', [0, 0, 0.03])]);
+
 export const rugModel = (w: number, d: number, color: string) =>
   model(`rug:${w}x${d}:${color}`, () => [box(w, 0.008, d, shade(color, -0.12), [0, 0.004, 0]), box(w - 0.18, 0.012, d - 0.18, color, [0, 0.006, 0]), box(w - 0.5, 0.014, d - 0.5, shade(color, 0.12), [0, 0.007, 0])]);
 

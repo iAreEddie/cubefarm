@@ -59,7 +59,7 @@ export interface Focus {
     | { kind: 'channel'; repoId: string; pr: number | null }
     | { kind: 'resume' }
     | { kind: 'roof'; op: string }
-    | { kind: 'decoration'; op: 'place' | 'take' | 'box' | 'arcade'; slot?: string }
+    | { kind: 'decoration'; op: 'place' | 'take' | 'box' | 'arcade' | 'browser'; slot?: string }
     | { kind: 'trophy'; id: string }
     /** Say hi to someone with nothing to do (Chatter.tsx). */
     | { kind: 'greet'; agentId: string }

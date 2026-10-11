@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { addTenure, apply, buy, dayKey, emptyLedger, grant, loadLedger, place, progressView, type LedgerEvent, type LedgerState } from './ledger.ts';
-import { DECOR_SLOTS, priceOf } from '../shared/progress.ts';
+import { addTenure, apply, buy, dayKey, emptyLedger, grant, loadLedger, place, progressView, saveMonitor, type LedgerEvent, type LedgerState } from './ledger.ts';
+import { DECOR_SLOTS, DEFAULT_MONITOR, priceOf } from '../shared/progress.ts';
 import { DAY_MS } from '../shared/careers.ts';
 
 const R = 'demo-co/pixel-todo';
@@ -280,7 +280,7 @@ describe('the state file', () => {
   it('shows connected floors only, with empty ones for floors that earned nothing yet', () => {
     const s = emptyLedger();
     grant(s, 'old/floor', 50);
-    expect(progressView(s, [R]).floors).toEqual({ [R]: { coins: 0, earned: 0, merges: 0, owned: {}, placed: {}, firstPr: null } });
+    expect(progressView(s, [R]).floors).toEqual({ [R]: { coins: 0, earned: 0, merges: 0, owned: {}, placed: {}, monitors: {}, monitorSlots: {}, firstPr: null } });
   });
 });
 
@@ -290,5 +290,82 @@ describe('late news', () => {
     run(s, open(1), open(2), merge(1, at(9, 0, 5)));
     expect(run(s, merge(2, at(23, 0, 4))).reward?.coins).toBe(10);
     expect(s.day).toEqual({ date: dayKey(at(9, 0, 5)), merges: 1, qaFails: 0 });
+  });
+});
+
+describe('browser monitors (#24)', () => {
+  const placeBrowser = (s: LedgerState, slot: string | null, from: string | null = null) => place(s, R, NAME, { item: 'browser', slot, from }, NOON);
+
+  it('buys one as its own instance at the catalogue price, only for a wall it fits', () => {
+    const s = emptyLedger();
+    grant(s, R, 1000);
+    expect(buy(s, R, 'browser')).toMatchObject({ price: 200 });
+    expect(Object.keys(s.floors[R].monitors)).toHaveLength(1);
+    expect(placeBrowser(s, 'w-kitchen')).toMatchObject({ error: expect.stringContaining('wide') });
+    expect(placeBrowser(s, 'w-west')).not.toHaveProperty('error');
+    const id = s.floors[R].monitorSlots['w-west'];
+    expect(s.floors[R].monitors[id]).toEqual({ ...DEFAULT_MONITOR });
+  });
+
+  it('carries the address and volume when it moves, and again after a spell in the box', () => {
+    const s = emptyLedger();
+    grant(s, R, 5000);
+    buy(s, R, 'browser');
+    placeBrowser(s, 'w-west');
+    const id = s.floors[R].monitorSlots['w-west'];
+    saveMonitor(s, R, id, { url: 'https://example.com/', volume: 33, muted: true });
+    placeBrowser(s, 'w-north-e', 'w-west');
+    expect(s.floors[R].monitorSlots).toEqual({ 'w-north-e': id });
+    expect(s.floors[R].monitors[id]).toEqual({ url: 'https://example.com/', volume: 33, muted: true });
+    placeBrowser(s, null, 'w-north-e');
+    expect(s.floors[R].monitorSlots).toEqual({});
+    expect(s.floors[R].monitors[id].url).toBe('https://example.com/');
+    placeBrowser(s, 'w-south-e');
+    expect(s.floors[R].monitors[s.floors[R].monitorSlots['w-south-e']]).toEqual({ url: 'https://example.com/', volume: 33, muted: true });
+  });
+
+  it('keeps two monitors independent', () => {
+    const s = emptyLedger();
+    grant(s, R, 5000);
+    buy(s, R, 'browser');
+    buy(s, R, 'browser');
+    placeBrowser(s, 'w-west');
+    placeBrowser(s, 'w-north-e');
+    const a = s.floors[R].monitorSlots['w-west'];
+    const b = s.floors[R].monitorSlots['w-north-e'];
+    expect(a).not.toBe(b);
+    saveMonitor(s, R, a, { url: 'https://a.example/', volume: 10 });
+    expect(s.floors[R].monitors[b].url).toBe('');
+    expect(saveMonitor(s, R, 'nope', { url: 'x' })).toEqual({ error: 'No such monitor on this floor' });
+  });
+
+  it('loads old state without losing a decoration or inventing settings', () => {
+    const s = emptyLedger();
+    grant(s, R, 5000);
+    buy(s, R, 'browser');
+    placeBrowser(s, 'w-west');
+    const id = s.floors[R].monitorSlots['w-west'];
+    saveMonitor(s, R, id, { url: 'https://example.com/', volume: 25 });
+    const back = loadLedger(JSON.parse(JSON.stringify(s)));
+    expect(back.floors[R].monitorSlots['w-west']).toBe(id);
+    expect(back.floors[R].monitors[id]).toEqual({ url: 'https://example.com/', volume: 25, muted: false });
+
+    // A save with a browser standing but no instance (hand-written, or from before monitors) gains one and keeps it.
+    const raw = JSON.parse(JSON.stringify(s)) as { floors: Record<string, Record<string, unknown>> };
+    delete raw.floors[R].monitors;
+    delete raw.floors[R].monitorSlots;
+    const fixed = loadLedger(raw);
+    expect(fixed.floors[R].placed['w-west']).toBe('browser');
+    const fixedId = fixed.floors[R].monitorSlots['w-west'];
+    expect(fixedId).toBeTruthy();
+    expect(fixed.floors[R].monitors[fixedId]).toEqual({ ...DEFAULT_MONITOR });
+
+    // A hand-edited monitor on a wall it can't use is dropped, not kept lying.
+    const raw2 = JSON.parse(JSON.stringify(s)) as { floors: Record<string, Record<string, unknown>> };
+    raw2.floors[R].placed = { 'w-kitchen': 'browser' };
+    raw2.floors[R].monitorSlots = { 'w-kitchen': id };
+    const dropped = loadLedger(raw2);
+    expect(dropped.floors[R].placed).toEqual({});
+    expect(dropped.floors[R].monitorSlots).toEqual({});
   });
 });
