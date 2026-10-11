@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import { api } from '../api';
 import { fmtDuration, fmtPct, fmtUsd, usageMeter } from '../ops';
 import { useStore } from '../store';
-import type { DoctorFinding, DoctorFix, OpsAlarm, OpsNumbers, RepoView } from '../../../shared/types';
+import type { BudgetView, DoctorFinding, DoctorFix, OpsAlarm, OpsNumbers, RepoView } from '../../../shared/types';
 import { confirmDialog } from './Confirm';
 
 // The manager's console → Mission control: Claude's usage with "Resume full speed", what needs you (the alarms the
@@ -240,6 +240,25 @@ function DoctorSection({ hot }: { hot: boolean }) {
   );
 }
 
+/** A floor's budget: its cap, the spend its agents reported, and the 80%/100% state (#7). */
+export function BudgetChip({ budget }: { budget: BudgetView }) {
+  if (budget.budgetUsd <= 0) return <span className="muted small">No budget</span>;
+  if (budget.spentUsd === null) {
+    return (
+      <span className="muted small" title="No session on this floor has reported a cost, so spend is not reported — never a zero, and it never blocks the floor on its own.">
+        not reported / {fmtUsd(budget.budgetUsd)}
+      </span>
+    );
+  }
+  const tone = budget.level === 'over' ? 'bad' : budget.level === 'warning' ? 'warn' : 'good';
+  return (
+    <span className={`budget-chip budget-${tone}`} title={`${fmtUsd(budget.spentUsd)} of ${fmtUsd(budget.budgetUsd)} reported from ${budget.sessions} session${budget.sessions === 1 ? '' : 's'}`}>
+      {budget.level === 'over' ? '🛑' : budget.level === 'warning' ? '⚠️' : '💵'} {fmtUsd(budget.spentUsd)} / {fmtUsd(budget.budgetUsd)}
+      {budget.pct !== null && ` · ${budget.pct}%`}
+    </span>
+  );
+}
+
 const COLUMNS: [string, (n: OpsNumbers) => string, string?][] = [
   ['Ready', (n) => String(n.ready), 'Backlog issues that can start now'],
   ['Building', (n) => String(n.building)],
@@ -258,12 +277,12 @@ const COLUMNS: [string, (n: OpsNumbers) => string, string?][] = [
 function OpsTable() {
   const ops = useStore((s) => s.ops);
   const repos = useStore((s) => s.repos);
-  const rows: [string, string, OpsNumbers][] = [
-    ...ops.floors.map((f): [string, string, OpsNumbers] => {
+  const rows: [string, string, OpsNumbers, BudgetView | null][] = [
+    ...ops.floors.map((f): [string, string, OpsNumbers, BudgetView | null] => {
       const r = repos.find((x) => x.id === f.repoId);
-      return [`${f.floor} · ${r?.fullName.split('/')[1] ?? f.repoId}`, r?.color ?? '#ccc', f];
+      return [`${f.floor} · ${r?.fullName.split('/')[1] ?? f.repoId}`, r?.color ?? '#ccc', f, r?.budget ?? null];
     }),
-    ['All floors', '#1f1d2b', ops.total],
+    ['All floors', '#1f1d2b', ops.total, null],
   ];
   return (
     <div className="ops-table-wrap">
@@ -287,6 +306,12 @@ function OpsTable() {
               ))}
             </tr>
           ))}
+          <tr>
+            <th title="The manager's cap on this floor's reported spend; not reported: no session has reported a cost, so it never blocks the floor on its own">Budget</th>
+            {rows.map(([name, , , b]) => (
+              <td key={name}>{b ? <BudgetChip budget={b} /> : <span className="muted">—</span>}</td>
+            ))}
+          </tr>
         </tbody>
       </table>
       {ops.ceoCostToday > 0 && <div className="muted small">The CEO's sessions today: ~{fmtUsd(ops.ceoCostToday)} (in All floors' cost).</div>}

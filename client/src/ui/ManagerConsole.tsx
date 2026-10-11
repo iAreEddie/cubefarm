@@ -11,7 +11,7 @@ import { confirmDialog } from './Confirm';
 import { IssueForm } from './KanbanView';
 import { LiveTerminal } from './LiveTerminal';
 import { MicButton } from './MicButton';
-import { OpsTab } from './MissionConsole';
+import { BudgetChip, OpsTab } from './MissionConsole';
 import { NotifySettings } from './NotifySettings';
 import { ProfileSettings } from './ProfileSettings';
 import { Panel } from './Overlays';
@@ -91,6 +91,51 @@ function OfficeRow({ update }: { update: OfficeUpdateView }) {
   );
 }
 
+/** A floor's budget (#7): the manager's cap on what its agents report spending, and the 80%/100% state. */
+function BudgetRow({ repo }: { repo: RepoView }) {
+  const demo = useStore((s) => s.demo);
+  const [value, setValue] = useState(repo.budget.budgetUsd > 0 ? String(repo.budget.budgetUsd) : '');
+  useEffect(() => setValue(repo.budget.budgetUsd > 0 ? String(repo.budget.budgetUsd) : ''), [repo.budget.budgetUsd]);
+  const save = () => {
+    const n = Number(value) || 0;
+    if (n !== repo.budget.budgetUsd) void attempt(() => api.updateRepo(repo.id, { budgetUsd: n }));
+  };
+  const simulate = (kind: 'warning' | 'over' | 'reset') => void attempt(() => api.simulateBudget(repo.id, kind));
+  return (
+    <div className="row wrap budget-row">
+      <span className="muted small">💵 Budget</span>
+      <input
+        type="number"
+        min={0}
+        step="1"
+        value={value}
+        placeholder="none"
+        aria-label={`Floor ${repo.floor} budget in dollars`}
+        title="Caps this floor's reported spend. 0 or blank: no budget. At 80% the office warns you; at 100% it holds the floor's new issues until you raise it."
+        style={{ maxWidth: 120 }}
+        onChange={(e) => setValue(e.target.value)}
+        onBlur={save}
+        onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+      />
+      <BudgetChip budget={repo.budget} />
+      {demo && (
+        <>
+          <span className="muted small">Demo:</span>
+          <button className="btn btn-small btn-ghost" disabled={repo.budget.budgetUsd <= 0} title="Put this floor's reported spend at 85% of its budget" onClick={() => simulate('warning')}>
+            Spend to 85%
+          </button>
+          <button className="btn btn-small btn-ghost" disabled={repo.budget.budgetUsd <= 0} title="Put this floor's reported spend at 105% of its budget: new issues hold until you raise it" onClick={() => simulate('over')}>
+            Spend to 105%
+          </button>
+          <button className="btn btn-small btn-ghost" title="Clear this floor's reported spend and its alerts" onClick={() => simulate('reset')}>
+            Reset spend
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
 function FloorRow({ repo, all }: { repo: RepoView; all: RepoView[] }) {
   const agents = useStore((s) => s.agents);
   const goToFloor = useStore((s) => s.goToFloor);
@@ -153,6 +198,7 @@ function FloorRow({ repo, all }: { repo: RepoView; all: RepoView[] }) {
           Disconnect
         </button>
       </div>
+      <BudgetRow repo={repo} />
       {others.length > 0 && (
         <div className="row wrap links">
           <span className="muted small">🔗 Agents here may read:</span>

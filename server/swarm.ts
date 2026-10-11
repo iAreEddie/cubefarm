@@ -33,6 +33,7 @@ import { agentPromptPreview, ceoPromptPreview, devBranch, devSystemPrompt, faile
 import { QA_RESUME_PROMPT, qaRetry } from './qaRetry.ts';
 import { drainDecision, lastUpdateMessage, POSTPONE_MS, type DrainInput, type LastUpdate } from './officeUpdate.ts';
 import { clampPacingSessions, DEFAULT_PACING_SESSIONS, mayStart, PACING_MS, pacingMessage, resumeRefusal, usageLabel, usageView, waived, warningView, type UsageWarning, type Waiver, type WorkKind } from './pacing.ts';
+import { budgetAlert, budgetBlocksNewWork, budgetStatus, clampBudgetUsd } from '../shared/budget.ts';
 import { emptyHistory, loadHistory, opsView, recordChecks, recordCost, recordMerges, recordQa, type OpsFloorState, type OpsHistory } from './metrics.ts';
 import { clampTrimIdleMin, DEFAULT_TRIM_IDLE_MIN, desksToTrim, formatBytes, freedMessage, idleSince, TRIM_SWEEP_MS } from './deskTrim.ts';
 import { cliLabel, isCli } from './clis.ts';
@@ -68,6 +69,7 @@ import type {
   AgentStatus,
   AgentTask,
   AgentView,
+  BudgetView,
   CeoInfo,
   CliView,
   ClientEvent,
@@ -116,6 +118,11 @@ interface PersistedRepo {
   qaBrief: string;
   preview: PreviewConfig; // how the floor's app runs for the preview monitor
   addedAt: number;
+  budgetUsd: number; // the manager's cap on the floor's reported spend (#7); 0 = no budget
+  spentUsd: number; // reported spend accumulated over the floor's life (only sessions that report a cost add to it)
+  costSessions: number; // sessions that reported a cost: 0 means spend is "not reported", never a zero
+  budgetWarned: boolean; // the 80% alert has been posted for the current crossing
+  budgetStopped: boolean; // the 100% alert has been posted for the current crossing
 }
 
 interface PersistedAgent {
@@ -627,6 +634,11 @@ export class Swarm {
           qaBrief: r.qaBrief ?? '',
           localPath: r.localPath ?? null,
           preview: { command: r.preview?.command ?? null, env: { ...r.preview?.env } },
+          budgetUsd: clampBudgetUsd(r.budgetUsd),
+          spentUsd: Number.isFinite(r.spentUsd) && r.spentUsd > 0 ? r.spentUsd : 0,
+          costSessions: Number.isFinite(r.costSessions) && r.costSessions > 0 ? r.costSessions : 0,
+          budgetWarned: !!r.budgetWarned,
+          budgetStopped: !!r.budgetStopped,
         })),
         // Developers and QA testers became agents (docs/agents.md): testers keep their seats, now the east-wall desks.
         agents: (loaded.agents ?? []).map((raw) => legacyAgent<PersistedAgent>(raw)).map((a) => ({
@@ -926,6 +938,13 @@ export class Swarm {
 
   // ---------- views ----------
 
+  /** A floor's budget as the console shows it: reported spend (null: nothing reported yet), the cap and the level. */
+  private budgetView(r: PersistedRepo): BudgetView {
+    const spent = r.costSessions > 0 ? Math.round(r.spentUsd * 1e4) / 1e4 : null;
+    const s = budgetStatus(r.budgetUsd, spent);
+    return { budgetUsd: r.budgetUsd, spentUsd: spent, pct: s.pct, level: s.level, sessions: r.costSessions };
+  }
+
   private repoView(r: PersistedRepo): RepoView {
     const rt = this.repoRt.get(r.id)!;
     return {
@@ -944,6 +963,7 @@ export class Swarm {
       mission: r.mission,
       summary: r.summary,
       qaBrief: r.qaBrief,
+      budget: this.budgetView(r),
       localPath: r.localPath,
       checkoutPath: this.backend.mainDir(r.fullName),
       cloneStatus: rt.cloneStatus,
@@ -1317,6 +1337,11 @@ export class Swarm {
       qaBrief: '',
       preview: { ...DEFAULT_PREVIEW, env: {} },
       addedAt: Date.now(),
+      budgetUsd: 0,
+      spentUsd: 0,
+      costSessions: 0,
+      budgetWarned: false,
+      budgetStopped: false,
     };
     this.backend.setLocalPath(repo.fullName, folder);
     this.state.repos.push(repo);
@@ -1416,7 +1441,7 @@ export class Swarm {
 
   updateRepo(
     id: string,
-    patch: Partial<Pick<PersistedRepo, 'autoAssign' | 'autoMerge' | 'browserTesting' | 'color' | 'links' | 'mission' | 'summary' | 'qaBrief'>> & { previewCommand?: unknown; previewEnv?: unknown },
+    patch: Partial<Pick<PersistedRepo, 'autoAssign' | 'autoMerge' | 'browserTesting' | 'color' | 'links' | 'mission' | 'summary' | 'qaBrief' | 'budgetUsd'>> & { previewCommand?: unknown; previewEnv?: unknown },
   ) {
     const repo = this.repo(id);
     const preview = parsePreviewPatch(patch.previewCommand, patch.previewEnv);
@@ -1433,6 +1458,11 @@ export class Swarm {
     if (typeof patch.mission === 'string') repo.mission = patch.mission.trim().slice(0, 4000);
     if (typeof patch.summary === 'string') repo.summary = patch.summary.trim().slice(0, 140);
     if (typeof patch.qaBrief === 'string') repo.qaBrief = patch.qaBrief.trim().slice(0, 2500);
+    if (patch.budgetUsd !== undefined) {
+      repo.budgetUsd = clampBudgetUsd(patch.budgetUsd);
+      // A new cap re-reads the crossings: setting it below what's been spent alerts at once; raising it re-arms.
+      this.tickBudgets();
+    }
     this.save();
     this.emitRepo(repo);
     setTimeout(() => this.schedule(), 200);
@@ -2586,6 +2616,12 @@ export class Swarm {
     a.costUsd += result.costUsd;
     a.turns += result.turns;
     recordCost(this.state.ops, repo.id, result.costUsd, a.endedAt);
+    // The floor's budget counts only what a session reported: CLIs that report nothing add no spend and never block it (#7).
+    if (result.costUsd > 0) {
+      repo.spentUsd = Math.round((repo.spentUsd + result.costUsd) * 1e4) / 1e4;
+      repo.costSessions += 1;
+      this.emitRepo(repo);
+    }
     this.ledger({ kind: 'session', agentId: a.id, key: `${a.id}:${a.startedAt}:${a.endedAt}`, costUsd: result.costUsd, turns: result.turns }, false); // emitted below
     // Dev servers the agent forgot to stop would otherwise keep its port and lock its desk folder.
     void this.releaseDesk(a, repo).catch(() => undefined);
@@ -3366,7 +3402,7 @@ export class Swarm {
    * "Depends on #N" wait until #N is closed; the rest go in readyIssues() order.
    */
   private startIssueWork(repo: PersistedRepo): boolean {
-    if (!repo.autoAssign || !this.mayStart('issue')) return false;
+    if (!repo.autoAssign || !this.mayStart('issue') || this.budgetBlocks(repo)) return false;
     const agent = this.available(repo)[0];
     const next = agent ? this.readyIssues(repo)[0] : undefined;
     if (!agent || !next) return false;
@@ -3462,6 +3498,76 @@ export class Swarm {
     this.emitUsage();
   }
 
+  // ---------- floor budgets (#7) ----------
+
+  /** True when the floor is at 100% of its budget: its new issues wait until the manager raises the cap. */
+  private budgetBlocks(repo: PersistedRepo): boolean {
+    return budgetBlocksNewWork(budgetStatus(repo.budgetUsd, repo.costSessions > 0 ? repo.spentUsd : null));
+  }
+
+  /**
+   * Read every floor's budget: post the 80% and 100% alerts once each, and re-arm them when spend falls back below a
+   * line (a raised cap). Called from the scheduler's beat and when the manager changes a cap.
+   */
+  private tickBudgets() {
+    for (const repo of this.state.repos) {
+      const spent = repo.costSessions > 0 ? repo.spentUsd : null;
+      const s = budgetStatus(repo.budgetUsd, spent);
+      const wantWarned = s.level === 'warning' || s.level === 'over';
+      const wantStopped = s.level === 'over';
+      let changed = false;
+      if (wantWarned && !repo.budgetWarned) {
+        repo.budgetWarned = true;
+        changed = true;
+        if (spent !== null) {
+          this.postMessage('office', budgetAlert('warning', repo.floor, repo.fullName, spent, repo.budgetUsd));
+          this.notifier.notify('budget', `Floor ${repo.floor} is at ${s.pct}% of its budget`, `${repo.fullName} has reported spend of ${s.pct}% of its budget. At 100% it stops starting new issues until you raise it.`);
+        }
+      }
+      if (wantStopped && !repo.budgetStopped) {
+        repo.budgetStopped = true;
+        changed = true;
+        if (spent !== null) {
+          this.postMessage('office', budgetAlert('over', repo.floor, repo.fullName, spent, repo.budgetUsd));
+          this.notifier.notify('budget', `Floor ${repo.floor} reached its budget`, `${repo.fullName} has reported spend up to its budget, so no new issues start on it until you raise it. Work in flight carries on.`);
+        }
+      }
+      if (!wantWarned && repo.budgetWarned) {
+        repo.budgetWarned = false;
+        changed = true;
+      }
+      if (!wantStopped && repo.budgetStopped) {
+        repo.budgetStopped = false;
+        changed = true;
+      }
+      if (changed) {
+        this.save();
+        this.emitRepo(repo);
+      }
+    }
+  }
+
+  /** The demo's way to put a floor's spend at a budget line on demand (POST /api/repos/:repo/budget/simulate). */
+  simulateBudget(repoId: string, kind: unknown): RepoView {
+    if (!this.backend.demo) throw new HttpError(404, 'Budgets can only be simulated in the demo office.');
+    if (kind !== 'warning' && kind !== 'over' && kind !== 'reset') throw new HttpError(400, 'kind must be "warning", "over" or "reset"');
+    const repo = this.repo(repoId);
+    if (kind === 'reset') {
+      repo.spentUsd = 0;
+      repo.costSessions = 0;
+    } else {
+      if (!(repo.budgetUsd > 0)) throw new HttpError(409, `Set a budget for ${repo.fullName} first, then simulate its spend.`);
+      const pct = kind === 'over' ? 105 : 85;
+      repo.spentUsd = Math.round(repo.budgetUsd * pct) / 100;
+      repo.costSessions = Math.max(1, repo.costSessions);
+    }
+    this.tickBudgets();
+    this.save();
+    this.emitRepo(repo);
+    this.opsSoon();
+    return this.repoView(repo);
+  }
+
   // ---------- mission control ----------
 
   private opsTimer: NodeJS.Timeout | null = null;
@@ -3528,6 +3634,7 @@ export class Swarm {
    */
   private schedule() {
     this.tickUsage();
+    this.tickBudgets();
     this.progressTick();
     if (this.officeUpdateTick()) return; // draining for the office's own update
     this.applyTeamChanges(); // before handing out work, so agents on their way out get none
