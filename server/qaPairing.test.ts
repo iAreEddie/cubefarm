@@ -7,6 +7,7 @@ import { afterAll, describe, expect, it, vi } from 'vitest';
 // from the author's, which depends on the runtime the reviewer's fresh session actually runs: the agent's own CLI in a
 // terminal, but always Claude Code through the SDK or when the terminals are unavailable. The office writes state to a
 // folder of its own so other tests' files are left alone.
+const originalHome = process.env.SWARM_HOME;
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cubefarm-qa-pairing-'));
 process.env.SWARM_HOME = home;
 const { createDemoBackend } = await import('./demo.ts');
@@ -14,6 +15,8 @@ const { Swarm } = await import('./swarm.ts');
 
 afterAll(() => {
   vi.restoreAllMocks();
+  if (originalHome === undefined) delete process.env.SWARM_HOME;
+  else process.env.SWARM_HOME = originalHome;
   fs.rmSync(home, { recursive: true, force: true, maxRetries: 5 });
 });
 
@@ -127,6 +130,22 @@ describe('QA pairing at runtime (#8)', () => {
     const p = await pickFor([{ cli: 'claude' }], 0);
     expect(p.runQa).toHaveBeenCalledTimes(1);
     expect(testerOf(p)).toBe(p.floor[0].id); // nobody else can: self-QA, like main has always done
+  });
+
+  it('prefers a different model within the same coding agent in the terminal runtime', async () => {
+    // All three run Claude Code; the author and the lower-desk reviewer share a model (a per-agent override), so the
+    // higher-desk agent on a different model must be preferred, not just the lowest-desk agent.
+    const p = await pickFor(
+      [
+        { cli: 'claude', model: 'claude-opus-5-5' },
+        { cli: 'claude', model: 'claude-opus-5-5' },
+        { cli: 'claude', model: 'claude-sonnet-5' },
+      ],
+      0,
+      { runtime: 'terminal' },
+    );
+    expect(p.internals.pairingOf(p.floor[0])).toEqual({ cli: 'claude', model: 'claude-opus-5-5' });
+    expect(testerOf(p)).toBe(p.floor[2].id); // the different model, not desk order or the author
   });
 
   describe('the SDK runtime runs Claude Code no matter what the agent asked for', () => {
