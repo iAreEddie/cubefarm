@@ -343,6 +343,12 @@ export interface SwarmSettings {
    * on, and testing is the step that least benefits from company.
    */
   maxQaAtOnce: number;
+  /**
+   * Let the office reboot itself once a merge lands, so what it owns is closed and it comes back on the merged code.
+   * The office drains first -- nothing new starts while running sessions finish, up to DRAIN_TIMEOUT_MS -- so this
+   * does not cut work off. Off by default: restarts are the manager's call unless they ask for this.
+   */
+  restartAfterMerge: boolean;
   ceoHeartbeatMin: number; // minutes between the CEO's periodic reviews; 0 = off
   managerName: string; // what the office calls you
   companyName: string;

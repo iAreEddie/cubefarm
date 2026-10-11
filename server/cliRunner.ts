@@ -226,6 +226,16 @@ export function cliAlive(term: AgentTerminal): boolean | null {
   return live.proc !== null;
 }
 
+/**
+ * The pid of the CLI running for this agent, or 0 when none is. The office knows the pids of what it spawns; this is how
+ * it learns which of them belongs to which agent, so a process found later can be attributed to its owner
+ * (ownedProcesses.ts) instead of being an anonymous orphan nobody can safely stop.
+ */
+export function cliPidFor(agentId: string): number {
+  for (const live of lives.values()) if (live.agentId === agentId) return live.proc?.pid ?? 0;
+  return 0;
+}
+
 /** What the keeper holds with a CLI's terminal, so the office can pick it up again after a restart. */
 interface CliMeta {
   agentId: string;

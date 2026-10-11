@@ -214,6 +214,7 @@ export const useStore = create<State>((set, get) => ({
     scaling: 'approve',
     maxAgents: DEFAULT_MAX_AGENTS,
     maxQaAtOnce: DEFAULT_MAX_QA_AT_ONCE,
+    restartAfterMerge: false,
     ceoHeartbeatMin: 60,
     managerName: '',
     companyName: '',
