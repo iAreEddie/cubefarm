@@ -33,7 +33,7 @@ Workflow:
 1. Read the issue and explore the relevant code before changing anything.
 2. Implement the change with focused commits and clear messages.
 3. Run the project's existing tests, linters and build (if any) and fix what you broke. Install dependencies first if needed (e.g. npm install when node_modules is missing).
-4. If the project has a web UI, start its dev server on port 5839 (reserved for you, so you don't collide with teammates) in whatever non-blocking way your tools allow, then check your change with the Playwright browser tools (mcp__playwright__browser_navigate, browser_snapshot, browser_click, browser_take_screenshot). Stop the server when you're done. Never leave a server running in the foreground: a command that does not return ends your session exactly where it is, and the office then sees an agent that stopped reporting rather than one that failed. If the server does not come up, say so in your PR body and finish — do not sit and wait for it.
+4. Optional, if the project has a web UI: a browser check, but ONLY if you can start a server without waiting for it. A server runs until it is killed, so starting one in the foreground hangs your turn and your session stops reporting: that has wedged more sessions on this floor than any other single step. If your tools cannot start a process and return (many cannot), SKIP the browser step. Do not improvise, do not retry it on another port, and do not sit and wait. Skipping it is a correct, expected outcome: say so in your PR body and finish with the checks you did run. If you can start one and return, use port 5839 (reserved for you) and the Playwright tools (mcp__playwright__browser_navigate, browser_snapshot, browser_click, browser_take_screenshot), then stop it.
 5. Push: git push -u origin swarm/issue-7-margaret
 6. Open a pull request with the GitHub CLI: gh pr create --base main --head swarm/issue-7-margaret --title "<concise title>" --body "<what changed, how you verified it, assumptions>". The body must contain "Closes #<issue number>".
 7. End your final message with the pull request URL on its own line.
@@ -65,7 +65,7 @@ Workflow:
 1. Read the issue and explore the relevant code before changing anything.
 2. Implement the change with focused commits and clear messages.
 3. Run the project's existing tests, linters and build (if any) and fix what you broke. Install dependencies first if needed (e.g. npm install when node_modules is missing).
-4. If the project has a web UI, start its dev server on port 5839 (reserved for you, so you don't collide with teammates) in whatever non-blocking way your tools allow, then check your change with the Playwright browser tools (mcp__playwright__browser_navigate, browser_snapshot, browser_click, browser_take_screenshot). Stop the server when you're done. Never leave a server running in the foreground: a command that does not return ends your session exactly where it is, and the office then sees an agent that stopped reporting rather than one that failed. If the server does not come up, say so in your PR body and finish — do not sit and wait for it.
+4. Optional, if the project has a web UI: a browser check, but ONLY if you can start a server without waiting for it. A server runs until it is killed, so starting one in the foreground hangs your turn and your session stops reporting: that has wedged more sessions on this floor than any other single step. If your tools cannot start a process and return (many cannot), SKIP the browser step. Do not improvise, do not retry it on another port, and do not sit and wait. Skipping it is a correct, expected outcome: say so in your PR body and finish with the checks you did run. If you can start one and return, use port 5839 (reserved for you) and the Playwright tools (mcp__playwright__browser_navigate, browser_snapshot, browser_click, browser_take_screenshot), then stop it.
 5. Push: git push origin HEAD:swarm/issue-7-margaret
 6. Reply with a short summary of what you fixed.
 Rules: never push to the default branch, never force-push, never merge pull requests yourself (the office merges them once QA and the checks pass), and never edit files outside your worktree. If you cannot finish, open a draft PR (gh pr create --draft) explaining what is left and why.`,
@@ -85,7 +85,7 @@ How to test:
 1. Read the PR description and the linked issue, and work out the acceptance criteria.
 2. Review the code as a careful reviewer would: git diff origin/main...HEAD. Look for bugs, unhandled errors and edge cases, security problems, leftover debug code, and new logic without tests.
 3. Install dependencies if needed (e.g. npm install when node_modules is missing), then run the project's test suite, linters, type checks and build (whichever exist).
-4. If the project has a UI, start it on port 5839 (reserved for you) in whatever non-blocking way your tools allow, then exercise the change in a real browser with the Playwright tools: navigate, click, type, resize to a phone size, try edge cases, and check the console for errors. Take a screenshot with browser_take_screenshot (no filename) of every important state: the screenshots are attached to the PR as evidence. Stop the server afterwards. Never leave a server running in the foreground: a command that does not return ends your session exactly where it is, and the office then sees a reviewer that stopped reporting rather than one that failed — which stalls the whole floor's QA. If it does not come up, test what you can without it, say so, and finish.
+4. A browser check is expected here, but only if you can start a server without waiting for it. A server runs until it is killed, so starting one in the foreground hangs your turn and your session stops reporting: that has wedged more QA sessions on this floor than anything else, and a wedged reviewer stalls the whole floor. If your tools cannot start a process and return (many cannot), do the checks that do not need a browser and say in your report that the browser check was skipped and why — an honest skip is far better than a stalled review, and it is not a reason to fail the PR by itself. Do not improvise and do not retry on another port. If you can start one and return, use port 5839 (reserved for you) and exercise the change with the Playwright tools: navigate, click, type, resize to a phone size, try edge cases, and check the console for errors. Take a screenshot with browser_take_screenshot (no filename) of every important state: the screenshots are attached to the PR as evidence. Stop the server afterwards.
 5. You may write throwaway scripts to probe behaviour, but do not commit them.
 A merge conflict with the default branch is not a fail, nor is a red check unrelated to this change (a flake or an outage: say why): judge the change itself (on a throwaway merge if you need newer work) and pass it if it's good. The office sends conflicting PRs back for a merge fix, then you re-test, and re-runs a failed check before anyone fixes it.
 
@@ -197,18 +197,20 @@ describe('fix prompts', () => {
 });
 
 describe('agents and their dev server', () => {
-  // A dev server does not return: `npm run dev` is still running after 8s. An agent that waits for one never ends
-  // its turn, so the office sees an agent that stopped reporting rather than one that failed. Three QA sessions
-  // stalled exactly this way and nothing on the floor was reviewed.
-  it('are told never to sit on it, and to finish without it if it does not come up', () => {
-    const prompts = [
-      devSystemPrompt({ ...dev, agent: agent(), repo: repo() }),
-      qaSystemPrompt({ ...qa, agent: agent(), repo: repo() }),
-    ];
-    for (const p of prompts) {
-      expect(p).toContain('non-blocking');
-      expect(p).toContain('Never leave a server running in the foreground');
+  // Every wedge seen on this floor ended at "let me boot the demo office". The prompts used to ask for a server
+  // started "in whatever non-blocking way your tools allow", which many CLIs cannot do at all, so the honest
+  // instruction is now to skip the browser step and say so: a hung session is worse than an admitted skip.
+  it('are told to skip the browser step rather than hang on a server, and never to wait for one', () => {
+    const devP = devSystemPrompt({ ...dev, agent: agent(), repo: repo() });
+    const qaP = qaSystemPrompt({ ...qa, agent: agent(), repo: repo() });
+    for (const p of [devP, qaP]) {
+      // Both must say a server is only worth starting if control returns, and neither may invite the wedge.
+      expect(p).toContain('without waiting for it');
+      expect(p).not.toContain('in whatever non-blocking way your tools allow');
       expect(p).not.toMatch(/start (its dev server|it) in the background/);
     }
+    // The dev prompt tells a builder to skip it; the QA prompt tells a reviewer an honest skip beats a stalled review.
+    expect(devP).toContain('SKIP the browser step');
+    expect(qaP).toContain('an honest skip is far better than a stalled review');
   });
 });
