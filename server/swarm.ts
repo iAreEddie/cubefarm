@@ -11,7 +11,7 @@ import { afterClose, ASK_AGAIN_MS, closedWhy, closuresHeld, forgettable, issueOp
 import { depsPromptLine, type DepsOutcome } from './deps.ts';
 import { setUpDesk } from './deskSetup.ts';
 import { fixOutcome, MAX_FIX_FAILURES } from './fixOutcome.ts';
-import { fixGoesTo, pickTester, PREP_HOLD_MS, prepFailure, prepHeld, type PrepStrikes } from './handOut.ts';
+import { fixGoesTo, pickTester, PREP_HOLD_MS, prepFailure, prepHeld, type PrepStrikes, type TesterPairing } from './handOut.ts';
 import { HttpError } from './httpError.ts';
 import { IssueAges } from './issueAges.ts';
 import { issuesResolvedBy, issueTaken } from './issueClaims.ts';
@@ -57,7 +57,7 @@ import { cleanStyle, HAIR_COLORS, SKIN_TONES, type AgentStyle } from '../shared/
 import { achievementDef, type ProgressView } from '../shared/progress.ts';
 import { parsePongResult, PONG_PLAYER, recordGame } from '../shared/pong.ts';
 import { effectiveModel } from '../shared/models.ts';
-import { LEGACY_CEO_CLI, resolveCli } from '../shared/cli.ts';
+import { LEGACY_CEO_CLI, resolveCli, SDK_CLI } from '../shared/cli.ts';
 import { DEFAULT_WEATHER, DEFAULT_WORLD_EVENTS, weatherSettings, worldEventSettings } from '../shared/outside.ts';
 import { DEFAULT_THEME_SETTINGS, dueGreeting, themeSettings } from '../shared/themes.ts';
 import { CEO_ID, DEFAULT_DOG_NAME, DEFAULT_MAX_AGENTS, FLOOR_SEATS, INSTALL_STEP } from '../shared/types.ts';
@@ -2293,6 +2293,15 @@ export class Swarm {
   }
 
   /**
+   * The coding agent an agent's fresh session actually runs: their own in the terminal runtime, but always Claude Code
+   * through the Agent SDK, or when the terminals are unavailable (the keeper couldn't start). QA pairing (#8) compares
+   * this, so it matches the CLI a reviewer's fresh session really runs, not just the one they asked for.
+   */
+  private runtimeCli(a: PersistedAgent): AgentCli {
+    return this.backend.terminals ? resolveCli(a, this.state.settings) : SDK_CLI;
+  }
+
+  /**
    * How an agent's next session runs: the CLI in their terminal (the terminal runtime), or Claude Code through the
    * SDK. A session can only be resumed by the CLI that made it, so a follow-up stays with that CLI — except when their
    * coding agent has been changed since: then the new one starts a session of its own, and the old CLI must not be
@@ -2300,7 +2309,7 @@ export class Swarm {
    */
   private sessionRuntime(a: PersistedAgent, resume?: string): { terminal?: AgentTerminal; cli?: AgentCli; label?: string; resumeSessionId?: string } {
     const inTerminal = this.state.settings.runtime === 'terminal' && this.backend.terminals;
-    let cli: AgentCli = resolveCli(a, this.state.settings);
+    let cli: AgentCli = this.runtimeCli(a);
     // A session from before the last coding-agent change belongs to the old CLI: start fresh instead of resuming it.
     if (resume && a.sessionCli && a.sessionCli !== cli) {
       resume = undefined;
@@ -2318,6 +2327,12 @@ export class Swarm {
    */
   private modelFor(a: PersistedAgent, cli: AgentCli | undefined) {
     return effectiveModel(a.model, cli ?? 'claude', this.state.settings, DEFAULT_MODEL);
+  }
+
+  /** What an agent actually runs, office default resolved: the pairing QA is preferred to differ from the author by (#8). */
+  private pairingOf(a: PersistedAgent): TesterPairing {
+    const cli = this.runtimeCli(a);
+    return { cli, model: this.modelFor(a, cli) };
   }
 
   // ---------- terminals ----------
@@ -3367,9 +3382,10 @@ export class Swarm {
 
   /**
    * Finish work in flight: test queued PRs (oldest first) and get failed ones fixed. Returns true if work started.
-   * Any free agent but the PR's author tests it (handOut.ts pickTester); its author goes on with other work meanwhile. A failed PR goes back to its author when they're free; while the
-   * author is still in a session on it, it waits for them; otherwise any free agent takes it. A PR whose desks keep
-   * failing to set up sits out.
+   * Any free agent but the PR's author tests it (handOut.ts pickTester), preferring a tester whose resolved coding agent
+   * (then model) differs from the author's (#8); the author goes on with other work meanwhile. A failed PR goes back to
+   * its author when they're free; while the author is still in a session on it, it waits for them; otherwise any free
+   * agent takes it. A PR whose desks keep failing to set up sits out.
    */
   private startPipelineWork(repo: PersistedRepo): boolean {
     const free = this.available(repo);
@@ -3390,7 +3406,9 @@ export class Swarm {
     const owed = new Set(fixes.map((q) => q.devAgentId).filter((id): id is string => !!id));
     for (const rec of waiting('queued', 'qa')) {
       const othersCan = this.state.agents.some((a) => a.repoId === repo.id && a.role !== 'ceo' && a.id !== rec.devAgentId && a.status !== 'stopped');
-      const tester = pickTester(free, rec.devAgentId, owed, othersCan, now - rec.updatedAt);
+      const author = rec.devAgentId ? (this.state.agents.find((a) => a.id === rec.devAgentId) ?? null) : null;
+      // Prefer a tester whose coding agent (then model) differs from the author's, so cheap builders get a second pair of eyes (#8).
+      const tester = pickTester(free, rec.devAgentId, (a) => this.pairingOf(a), author ? this.pairingOf(author) : null, owed, othersCan, now - rec.updatedAt);
       if (!tester) continue;
       void this.runQa(tester, repo, rec);
       return true;
