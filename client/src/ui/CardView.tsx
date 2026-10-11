@@ -47,15 +47,19 @@ export function CardView({ repoId, cardKey, number, pr }: { repoId: string; card
     );
   }
   const { card, col } = at;
-  const pull = card.prNumber ? repo.pulls.find((p) => p.number === card.prNumber) : undefined;
-  const issueNumber = pull ? pull.closesIssues[0] : card.number;
+  // Which card this is comes from the card itself (`prNumber`), not from whether its pull is still on the board: a PR
+  // card whose PR has left the list must not fall back to a same-numbered issue's body. `pull` is that PR's GitHub
+  // state when the board still has it.
+  const isPr = !!card.prNumber;
+  const pull = isPr ? repo.pulls.find((p) => p.number === card.prNumber) : undefined;
+  const issueNumber = isPr ? pull?.closesIssues[0] : card.number;
   const issue = issueNumber ? repo.issues.find((i) => i.number === issueNumber) : undefined;
   const open = new Set(repo.issues.map((i) => i.number));
   const waits = issue ? blockers(issue.body, open) : [];
   const waiters = issue ? repo.issues.filter((i) => blockers(i.body, open).includes(issue.number)).map((i) => i.number) : [];
   // A PR card shows the pull request's own body, never the linked issue's (the issue body belongs to the issue card);
   // an issue card shows its own body. This is why the server carries the PR body at all (#25).
-  const description = ((pull ? pull.body : issue?.body) ?? '').trim();
+  const description = ((isPr ? pull?.body : issue?.body) ?? '').trim();
   const url = card.url ?? pull?.url ?? issue?.url;
 
   return (
