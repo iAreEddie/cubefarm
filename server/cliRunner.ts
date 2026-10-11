@@ -51,6 +51,8 @@ const BOOT_MS = 60_000;
 const USAGE_WARN_PCT = 90;
 /** Prompts longer than this go in a file: Windows caps a command line at 32K characters. */
 const INLINE_PROMPT_MAX = 8000;
+/** A non-Claude CLI that exits 0 after running at least this long counts as having finished its turn. */
+const CLEAN_EXIT_MIN_MS = 20_000;
 
 // ---------- routing the CLIs' calls back to their sessions ----------
 
@@ -350,6 +352,31 @@ export function resumableSession(b: Record<string, unknown>, exists: (file: stri
 /** Claude Code was told to resume a conversation that isn't on disk (it says so and exits 1). */
 export const lostConversation = (screen: string) => /No conversation found with session ID/i.test(screen);
 
+/**
+ * Whether a CLI that just exited finished its turn. Claude Code's Stop hook gives the final text; Codex's notify
+ * program and OpenCode's plugin report the turn over the notify URL. OpenCode's `run` exits 0 at the end of its turn
+ * and reports asynchronously, so its report can lose the race with the process exiting: a clean exit is a finished
+ * turn even when nothing was captured. A genuine non-zero exit (a crash, a missing sign-in, a resume that fails) or a
+ * turn the plugin reported as failed stays an error.
+ */
+export function cliFinished(opts: {
+  cli: AgentCli;
+  exitCode: number;
+  /** A turn-complete report arrived (Claude Stop, Codex notify, OpenCode idle). */
+  turnDone: boolean;
+  /** The CLI reported the turn itself failed. */
+  turnError: string | null;
+  lastText: string;
+  elapsedMs: number;
+}): boolean {
+  if (opts.exitCode !== 0 || opts.turnError) return false;
+  if (opts.cli === 'claude') return opts.lastText !== '';
+  if (opts.turnDone || opts.lastText !== '') return true;
+  // OpenCode's `run` exits 0 at the end of its turn; the plugin's report is async and can lose the race with the exit.
+  if (opts.cli === 'opencode') return true;
+  return opts.elapsedMs > CLEAN_EXIT_MIN_MS;
+}
+
 export function startCliSession(opts: SessionOptions, callbacks: SessionCallbacks): SessionHandle {
   const term = opts.terminal!;
   // A follow-up to the session a CLI is still waiting in picks that CLI up again, and so does an office that restarted
@@ -379,6 +406,7 @@ export function startCliSession(opts: SessionOptions, callbacks: SessionCallback
   let turns = 0;
   let lastText = '';
   let turnError: string | null = null; // the turn failed (OpenCode reports errors separately from going idle)
+  let turnDone = false; // a turn-complete report arrived (Claude Stop, Codex notify, OpenCode idle)
   let begun = false; // the CLI took its first prompt
   let finishTimer: NodeJS.Timeout | undefined;
   let bootTimer: NodeJS.Timeout | undefined;
@@ -427,12 +455,14 @@ export function startCliSession(opts: SessionOptions, callbacks: SessionCallback
   /** A turn ended: finished, unless the CLI picks up another prompt within the grace period. */
   const turnEnded = (text: string) => {
     lastText = text;
+    turnDone = true;
     cb.tool(null);
     clearTimeout(finishTimer);
     finishTimer = setTimeout(() => finish({ ok: !turnError, text: lastText, errors: turnError ? [turnError] : [] }, true), FINISH_GRACE_MS);
   };
   const busy = () => {
     begun = true;
+    turnDone = false;
     clearTimeout(finishTimer);
   };
 
@@ -602,7 +632,7 @@ export function startCliSession(opts: SessionOptions, callbacks: SessionCallback
       finish({ ok: false, text: '', errors: [`${label} couldn't find the conversation it was resuming, so the next session starts a new one.`] });
       return;
     }
-    const ok = exitCode === 0 && (lastText !== '' || (cli !== 'claude' && Date.now() - started > 20_000));
+    const ok = cliFinished({ cli, exitCode, turnDone, turnError, lastText, elapsedMs: Date.now() - started });
     finish({ ok, text: lastText, errors: ok ? [] : [`${label} exited${exitCode ? ` with code ${exitCode}` : ''} before finishing.`] });
   };
 
