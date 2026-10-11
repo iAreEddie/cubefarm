@@ -166,6 +166,9 @@ export function newScreenshots(dir: string, seen: Set<string>, now = Date.now())
 
 export const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
+/** How much of one reasoning block the office keeps and sends (a thought can be long; the transcript stays bounded). */
+export const THOUGHT_MAX = 4000;
+
 function rel(cwd: string, p: unknown) {
   const s = String(p ?? '');
   if (!s) return '';
@@ -428,7 +431,9 @@ export function startSession(opts: SessionOptions, callbacks: SessionCallbacks):
             lines.slice(0, 30).forEach((l, i) => out.push({ kind: 'text', text: `${i === 0 ? '● ' : '  '}${l}` }));
             if (lines.length > 30) out.push({ kind: 'text', text: `  … (${lines.length - 30} more lines)` });
           } else if (block.type === 'thinking') {
-            out.push({ kind: 'thinking', text: '✻ Thinking…' });
+            // The model's own reasoning text, straight from the SDK: the office never invents or re-asks for it.
+            const thinking = (block.thinking ?? '').trim();
+            if (thinking) out.push({ kind: 'thinking', text: clip(thinking, THOUGHT_MAX) });
           } else if (block.type === 'tool_use') {
             const toolInput = (block.input ?? {}) as Record<string, unknown>;
             toolNames.set(block.id, block.name);
