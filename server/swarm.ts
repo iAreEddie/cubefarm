@@ -16,6 +16,8 @@ import { HttpError } from './httpError.ts';
 import { IssueAges } from './issueAges.ts';
 import { issuesResolvedBy, issueTaken } from './issueClaims.ts';
 import { CHECKS_ALERT_MS, failedRunIds, MAX_MERGE_FIXES, MERGE_RETRY_MS, mergeStep } from './mergeGate.ts';
+import * as owned from './ownedProcesses.ts';
+import type { OwnedProcess } from './ownedProcesses.ts';
 import { orphanedQa } from './qaOrphans.ts';
 import { catchUp, failedRunId, logTail, noChangeReason, PR_LIMITS_VERSION, QA_STOPPED, unpushedFix } from './prOwnership.ts';
 import { conflictFixInstructions, MAX_QA_ROUNDS, qaGate, qaOutcome, type PreQa, type QaNext } from './qaOutcome.ts';
@@ -1755,6 +1757,9 @@ export class Swarm {
     await this.writeState().catch((err) => console.warn('could not save the state', err));
     await this.journal.close().catch((err) => console.warn('could not write the journal', err));
     await this.backend.releaseClis(restart); // before the terminals are saved: whatever they print next waits in the keeper
+    // Close what cubefarm owns. On a restart the CLIs stay in the keeper (releaseClis decides), but a stray server
+    // an agent started has nobody else to stop it.
+    await this.stopOwnedProcesses();
     await this.saveTerminals(true);
     await this.previews.stopAll(this.state.repos);
   }
@@ -4356,6 +4361,8 @@ export class Swarm {
 
   private activity = new Map<string, number>(); // agent id -> their session's latest output or tool activity
   private watch: WatchMemory = { remedied: new Map(), nudged: new Map(), reported: new Map() };
+  /** Processes cubefarm is responsible for (ownedProcesses.ts): what it spawned, and what an agent started. */
+  private owned: OwnedProcess[] = [];
   private doctor: DoctorFinding[] = [];
   private ignored = new Set<string>(); // findings the manager ignored, until they go away
   private lastDoctor = '';
@@ -4390,10 +4397,77 @@ export class Swarm {
     return workState(issue === null ? null : issue ? 'OPEN' : 'CLOSED', a.prNumber != null ? (pullNow(a.prNumber, f)?.state ?? null) : null);
   }
 
+  /** Each agent's liveness and current task, as the registry needs them to judge whether a process still has an owner. */
+  private ownerStates(): Map<string, owned.OwnerState> {
+    const owners = new Map<string, owned.OwnerState>();
+    for (const a of this.state.agents) {
+      if (a.role === 'ceo') continue;
+      owners.set(a.id, { live: a.status !== 'stopped' && a.status !== 'error', task: a.task ?? null });
+    }
+    return owners;
+  }
+
+  /**
+   * Record the processes cubefarm is responsible for. The office knows the pids it spawned itself -- the keeper and
+   * each agent's CLI -- and this is where they enter the register; anything that later loses its owner can then be
+   * found and stopped instead of sitting there forever. An agent's own child processes are not visible that way (a
+   * demo server started from the agent's shell is nobody's child), which is how forty of them piled up on one machine
+   * with dead parents and no way to attribute them; finding those by listening port is the follow-up.
+   */
+  private sweepOwnedProcesses(now: number): void {
+    const found: OwnedProcess[] = [];
+    for (const a of this.state.agents) {
+      if (a.role === 'ceo') continue;
+      const pid = this.backend.cliPid(a.id);
+      if (pid > 0) {
+        found.push({
+          pid,
+          kind: 'cli',
+          agentId: a.id,
+          agentName: a.name,
+          task: a.task ?? null,
+          prNumber: a.prNumber ?? null,
+          issueNumber: a.issueNumber ?? null,
+          firstSeen: now,
+          cmdline: `agent CLI (${a.cli || this.state.settings.defaultCli})`,
+        });
+      }
+    }
+
+    let next = this.owned;
+    for (const p of found) next = owned.track(next, p);
+    // A pid that is no longer running must not stay in the register, or it would be reported as an orphan forever.
+    next = owned.forget(next, new Set(found.map((p) => p.pid)));
+    this.owned = next;
+  }
+
+  /** What cubefarm owns, how much of it, and how much has lost its owner: the one line the CEO and manager read. */
+  ownedSummary() {
+    return owned.processSummary(this.owned, this.ownerStates());
+  }
+
+  /** Every tracked process, for the CEO's read-only office_processes tool. */
+  ownedList(): OwnedProcess[] {
+    return this.owned;
+  }
+
+  /** Stop everything cubefarm owns. Called on a quit: on a restart the CLIs stay in the keeper instead. */
+  async stopOwnedProcesses(): Promise<void> {
+    for (const p of this.owned) {
+      if (p.kind === 'cli') continue; // the keeper owns agent CLIs; releaseClis decides their fate
+      try {
+        process.kill(p.pid);
+      } catch {
+        // already gone
+      }
+    }
+    this.owned = [];
+  }
   /** Every minute: find what's stuck (watchdog.ts), heal what can safely be healed, and list the rest for the doctor. heal false: only list. */
   private watchdogTick(heal = true) {
     const now = Date.now();
     forget(this.watch, now);
+    this.sweepOwnedProcesses(now);
     const agents: WatchAgent[] = this.state.agents.map((a) => {
       const rt = this.agentRt.get(a.id);
       const term = rt?.terminal;
@@ -5131,6 +5205,10 @@ export class Swarm {
           sessionLimit: s.sessionLimit || 'none',
           sessionsRunning: this.running(),
           usage: usageLabel(this.usageNow(), Date.now()),
+          // What cubefarm is responsible for, and how much of it has lost its owner. An orphaned process is one whose
+          // agent has gone or moved on: cubefarm stops it, but the count is here so the CEO can see it happening
+          // rather than wonder why the machine is busy (ownedProcesses.ts).
+          processes: this.ownedSummary(),
         },
         floors,
         pendingChanges: pending.map(req),

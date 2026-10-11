@@ -818,6 +818,7 @@ export function createDemoBackend(scale: DemoScale | null = null): Backend {
     reconnectClis: async () => [], // fake sessions end with the office
     hooksReady: () => undefined,
     cliAlive: () => null, // a fake session has no process to check
+    cliPid: () => 0, // and none to track
     releaseClis: async () => undefined,
     // The models the real office would have asked each CLI for (server/clis.ts), so the demo shows the same choices.
     detectClis: async () =>
