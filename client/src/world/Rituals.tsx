@@ -114,6 +114,7 @@ const COURIER: Agent = {
   browserUrl: null,
   hasScreenshot: false,
   screenshotAt: null,
+  live: 'off',
   lastError: null,
   career: null,
 };

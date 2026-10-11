@@ -252,6 +252,7 @@ export function compactAgent(a: JournalAgent, secrets: readonly string[] = []): 
     browserUrl: null,
     hasScreenshot: false,
     screenshotAt: null,
+    live: 'off', // watching a browser live is ephemeral; the replay never shows a frame
     lastError: null,
     career: a.career ? compactCareer(a.career, secrets) : null,
     // The sign over them: the kind of work, without its detail (a file, a command).

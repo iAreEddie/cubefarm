@@ -1,7 +1,8 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { browserProblem, chromePaths, playwrightMcp, playwrightMcpCli, playwrightMcpCommand } from './browser.ts';
+import { browserProblem, browserWatchingConfig, chromePaths, playwrightMcp, playwrightMcpCli, playwrightMcpCommand, writeBrowserWatchingConfig } from './browser.ts';
 import { launchArgs, type LaunchContext } from './clis.ts';
 
 const pkg = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '..', 'package.json'), 'utf8')) as { dependencies: Record<string, string> };
@@ -23,6 +24,22 @@ describe('the Playwright MCP server', () => {
 
   it('leaves --output-dir out when no folder is given (the Agent SDK runtime)', () => {
     expect(playwrightMcp()!.args).not.toContain('--output-dir');
+  });
+
+  it('keeps a profile and opens a loopback CDP port when the office watches the browser (#16)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cubefarm-browser-'));
+    const profile = path.join(dir, 'browser-profile');
+    const file = writeBrowserWatchingConfig(dir, profile);
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual(browserWatchingConfig(profile));
+    expect(browserWatchingConfig(profile)).toMatchObject({
+      browser: { isolated: false, userDataDir: profile, launchOptions: { args: ['--remote-debugging-port=0'] } },
+    });
+    // The watched MCP gets --config instead of --isolated; the profile is on disk inside the session folder.
+    const mcp = playwrightMcp(path.join(dir, 'browser'), file)!;
+    expect(mcp.args.slice(0, 4)).toEqual([playwrightMcpCli(), '--headless', '--config', file]);
+    expect(mcp.args).not.toContain('--isolated');
+    expect(playwrightMcpCommand('cli.js', 'init.js', undefined, 'node', undefined).args).toContain('--isolated');
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   it('passes Windows paths with spaces as whole arguments, unquoted', () => {

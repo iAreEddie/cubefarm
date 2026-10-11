@@ -36,6 +36,7 @@ const person = (id: string, role: JournalAgent['role'], repoId: string, desk: nu
   browserUrl: null,
   hasScreenshot: false,
   screenshotAt: null,
+  live: 'off',
   lastError: null,
 });
 

@@ -5,9 +5,10 @@ import type { AgentCli, AgentRole, AgentTask, EffortLevel, LogKind } from '../sh
 import type { OfficeTools } from './ceo.ts';
 import type { UsageWarning } from './pacing.ts';
 import type { AgentTerminal } from './terminal.ts';
-import { browserProblem, playwrightMcp } from './browser.ts';
+import { browserProblem, playwrightMcp, writeBrowserWatchingConfig } from './browser.ts';
+import { profileDirFor } from './liveCapture.ts';
 import { CROSS_TURN_TOOLS } from './clis.ts';
-import { VERSION } from './config.ts';
+import { HOME_DIR, VERSION } from './config.ts';
 
 // One Claude Code instance (via the Claude Agent SDK) on one task (building an issue, testing or fixing a PR) in its own git worktree.
 // The CEO runs through here too, with the office tools instead of a shell.
@@ -69,6 +70,11 @@ export interface SessionCallbacks {
   sessionId(id: string | null): void;
   browserUrl(url: string): void;
   screenshot(data: Buffer, mime: string): void;
+  /**
+   * The session's own test browser is being watched live (#16): `profileDir` is the folder whose DevToolsActivePort
+   * names its CDP endpoint. Never null here; the office stops watching when the session finishes.
+   */
+  liveBrowser?(profileDir: string): void;
   /** The final text of each turn: the reply to the prompt and to every message sent while it ran. */
   turn?(text: string): void;
   /** Claude turned the session away for the subscription's usage limit (epoch ms when it resets, if known). */
@@ -332,7 +338,20 @@ export function startSession(opts: SessionOptions, callbacks: SessionCallbacks):
 
   const mcpServers: Options['mcpServers'] = {};
   if (opts.browserTesting) {
-    const browser = playwrightMcp();
+    // #16: the office watches this session's own browser. The MCP still launches and owns it; a profile on disk plus a
+    // loopback CDP port (config file) is all the office needs to attach read-only. Watching is optional: if the config
+    // can't be written the browser still runs, just unwatchable.
+    // A profile of its own per session, so a left-over browser can't lock the folder the next one wants.
+    const liveDir = path.join(HOME_DIR, 'live', `${opts.agentId || 'sdk'}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`);
+    let configFile: string | undefined;
+    try {
+      const profileDir = profileDirFor(liveDir);
+      configFile = writeBrowserWatchingConfig(liveDir, profileDir);
+      cb.liveBrowser?.(profileDir);
+    } catch {
+      // no profile: the browser still works, it just can't be watched
+    }
+    const browser = playwrightMcp(undefined, configFile);
     if (browser) mcpServers.playwright = browser;
     const problem = browserProblem(browser);
     if (problem) cb.log([{ kind: 'error', text: problem }]);

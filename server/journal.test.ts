@@ -41,6 +41,7 @@ function agent(patch: Partial<JournalAgent> = {}): JournalAgent {
     browserUrl: null,
     hasScreenshot: false,
     screenshotAt: null,
+    live: 'off',
     lastError: null,
     ...patch,
   };

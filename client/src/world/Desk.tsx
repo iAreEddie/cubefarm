@@ -329,7 +329,7 @@ export const Desk = memo(function Desk({
     agent
       ? {
           id: `agent-${agent.id}`,
-          label: agent.role === 'ceo' ? `Open ${agent.name}'s desk (CEO) · P texts them from anywhere` : `View ${agent.name}'s terminal · ⚙️ Setup inside`,
+          label: agent.role === 'ceo' ? `Open ${agent.name}'s desk (CEO) · P texts them from anywhere` : `View ${agent.name}'s terminal & live playtest · ⚙️ Setup inside`,
           action: { kind: 'terminal', agentId: agent.id },
         }
       : full || spare

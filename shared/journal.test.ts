@@ -115,6 +115,7 @@ function agent(patch: Partial<JournalAgent> = {}): JournalAgent {
     browserUrl: 'http://localhost:5200',
     hasScreenshot: true,
     screenshotAt: 5,
+    live: 'off',
     lastError: null,
     ...patch,
   };
