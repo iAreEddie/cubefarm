@@ -1,5 +1,32 @@
 import { describe, expect, it } from 'vitest';
-import { checkRunOf, readTwice } from './github.ts';
+import { checkRunOf, readTwice, toPull } from './github.ts';
+
+describe('toPull', () => {
+  it("carries the pull request's own body, for a card to show instead of the issue's", () => {
+    const raw = {
+      number: 7,
+      title: 'Add socks',
+      body: 'What changed: socks.\n\nCloses #3',
+      url: 'https://github.com/o/r/pull/7',
+      headRefName: 'swarm/issue-3-ada',
+      state: 'OPEN' as const,
+      isDraft: false,
+      mergeable: 'MERGEABLE',
+      reviewDecision: null,
+      closingIssuesReferences: [{ number: 3 }],
+      createdAt: '2026-10-01T10:00:00Z',
+      mergedAt: null,
+      additions: 10,
+      deletions: 2,
+      headRefOid: 'abc123',
+      mergeStateStatus: 'CLEAN',
+      statusCheckRollup: null,
+    };
+    const pull = toPull(raw);
+    expect(pull.body).toBe('What changed: socks.\n\nCloses #3');
+    expect(pull.closesIssues).toEqual([3]);
+  });
+});
 
 describe('readTwice', () => {
   it('tries a failed read once more', async () => {

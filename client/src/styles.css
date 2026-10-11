@@ -1713,6 +1713,19 @@ input.inline:focus {
 .kcard-title a {
   font-weight: 700;
 }
+/* Pocket mode's Kanban cards open the read-up: a small button after the title. */
+.kcard-open {
+  margin-left: 6px;
+  padding: 1px 7px;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  border: 1.5px solid var(--ink);
+  border-radius: 999px;
+  background: var(--paper);
+  color: inherit;
+  cursor: pointer;
+}
 .kcard-foot {
   display: flex;
   gap: 6px;

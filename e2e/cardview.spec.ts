@@ -1,17 +1,21 @@
 import type { APIRequestContext, Locator, Page } from '@playwright/test';
 import { enterOffice, expect, startAt, test, type SavedView } from './helpers';
 
-// The whiteboard card window (CardView.tsx): a long issue/PR description is readable from its first line to its last in
-// the panel's own scroll region, on desktop and on a narrow phone viewport, and the close control stays reachable.
+// The whiteboard card window (CardView.tsx): a full issue or pull request description reads from its first line to
+// its last in the panel's own scroll region, on desktop and on a phone, with the window inside the viewport and the
+// close control and actions reachable. A PR card shows the PR's own body, not the issue it closes; pocket mode opens
+// the same window from its Kanban cards (#25).
 
-const FLOOR = 1;
-// Where the demo's floor-1 whiteboard is, so that floor (and its board) is the active one.
+const FLOOR = 2; // the demo's weather-api floor, where the deterministic PR fixtures live (server/demo.ts)
+// Where the demo's floor-2 whiteboard is, so that floor (and its board) is the active one.
 const SPOT: SavedView = { floor: FLOOR, x: 0, z: -7, yaw: 0, pitch: 0.15 };
 
-type Board = { open: (key: string) => boolean; cards: () => { key: string }[] };
+type Pull = { number: number; title: string; body: string; closesIssues: number[]; state: string };
+type Issue = { number: number; title: string; body: string };
+type StateRepo = { id: string; floor: number; issues: Issue[]; pulls: Pull[] };
+type Board = { open: (key: string) => boolean };
 // Methods can't cross the page boundary: call them inside evaluate.
 const openCard = (page: Page, key: string) => page.evaluate((k) => (window as unknown as { __swarmBoard: Board }).__swarmBoard.open(k), key);
-const boardCards = (page: Page) => page.evaluate(() => (window as unknown as { __swarmBoard: Board }).__swarmBoard.cards());
 
 /** Scrolls the region to its very bottom (deterministic, unlike key-repeat timing). */
 const toEnd = (body: Locator) => body.evaluate((el) => (el.scrollTop = el.scrollHeight));
@@ -25,8 +29,26 @@ async function expectInScroll(page: Page, text: string, body: Locator) {
   expect(l!.y + l!.height).toBeLessThanOrEqual(b!.y + b!.height + 1);
 }
 
-/** A Markdown description several screens long: prose, a list, a link, and a code line too long for a phone. */
-function longBody(marker: string): string {
+/** A wheel swipe on an element, as the old test did. */
+async function wheel(page: Page, box: { x: number; y: number; width: number; height: number }) {
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.wheel(0, 1500);
+}
+
+/** A real touch swipe up inside the region (CDP, so the browser scrolls it as a finger would). */
+async function swipeUp(page: Page, box: { x: number; y: number; width: number; height: number }) {
+  const client = await page.context().newCDPSession(page);
+  await client.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height * 0.75;
+  await client.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+  for (let i = 1; i <= 8; i++) await client.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y: y - i * 28 }] });
+  await client.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await client.detach();
+}
+
+/** A Markdown issue description several screens long: prose, a list, a link, and a code line too long for a phone. */
+function longIssueBody(marker: string): string {
   const lines: string[] = [`# Overview ${marker}`, '', `START-${marker}`, ''];
   for (let i = 1; i <= 30; i++) lines.push(`Paragraph ${i}: ${'lorem ipsum dolor sit amet '.repeat(4)}`);
   lines.push('', '## Checklist', '', '- first item', '- second item', '- a [link](https://example.com)', '- inline `code`');
@@ -35,9 +57,25 @@ function longBody(marker: string): string {
   return lines.join('\n');
 }
 
+async function state(page: Page) {
+  const { repos } = (await (await page.request.get('/api/state')).json()) as { repos: StateRepo[] };
+  const repo = repos.find((r) => r.floor === FLOOR)!;
+  return { repo, ...fixtures(repo) };
+}
+
+/** The demo's deterministic floor-2 PRs: A is long and closes an issue, B closes nothing, C is for switching to. */
+function fixtures(repo: StateRepo) {
+  const open = repo.pulls.filter((p) => p.state === 'OPEN');
+  return {
+    prA: open.find((p) => p.body.includes('START-PR-A'))!,
+    prB: open.find((p) => p.closesIssues.length === 0)!,
+    prC: open.find((p) => p.body.includes('second card to switch to'))!,
+  };
+}
+
 /** File a fresh issue with a long body, then open its card window (retrying until the client has the new card). */
-async function openLongCard(page: Page, request: APIRequestContext, repo: string, marker: string) {
-  const res = await request.post(`/api/repos/${encodeURIComponent(repo)}/issues`, { data: { title: `Long description ${marker}`, body: longBody(marker) } });
+async function openLongIssue(page: Page, request: APIRequestContext, repoId: string, marker: string) {
+  const res = await request.post(`/api/repos/${encodeURIComponent(repoId)}/issues`, { data: { title: `Long description ${marker}`, body: longIssueBody(marker) } });
   expect(res.ok(), await res.text()).toBe(true);
   const { number } = (await res.json()) as { number: number };
   await expect.poll(() => openCard(page, `i-${number}`), { message: `open card i-${number}`, timeout: 30_000 }).toBe(true);
@@ -45,81 +83,85 @@ async function openLongCard(page: Page, request: APIRequestContext, repo: string
   return number;
 }
 
-async function repoOfFloor(page: Page) {
-  const { repos } = (await (await page.request.get('/api/state')).json()) as { repos: { id: string; floor: number }[] };
-  return repos.find((r) => r.floor === FLOOR)!.id;
-}
-
 let seq = 0;
 const marker = () => `m${Date.now()}${seq++}`;
 
-test('a long card description scrolls from its first line to its last, and closes', async ({ page }) => {
+test('a long issue and PR description scroll first line to last, and the card switches, closes and returns focus', async ({ page }) => {
   await startAt(page, SPOT);
   await enterOffice(page);
-  const repo = await repoOfFloor(page);
-  const first = marker();
-  const number = await openLongCard(page, page.request, repo, first);
-
+  const { repo, prA, prB, prC } = await state(page);
   const panel = page.locator('.cardview');
   const body = page.locator('.cardview .panel-body');
-  // The full description is in the window (not the old 600-char excerpt), so its last marker is in the DOM.
-  await expect(page.getByText(`END-${first}`)).toHaveCount(1);
-  await expectInScroll(page, `START-${first}`, body);
 
-  // It is taller than the scroll region: reading it all takes scrolling.
+  // --- An issue card: the whole long body is in the window and reads by keyboard and wheel. ---
+  const m = marker();
+  await openLongIssue(page, page.request, repo.id, m);
+  await expect(page.getByText(`END-${m}`)).toHaveCount(1);
+  await expectInScroll(page, `START-${m}`, body);
   const size = await body.evaluate((el) => ({ top: el.scrollTop, scroll: el.scrollHeight, client: el.clientHeight }));
   expect(size.scroll).toBeGreaterThan(size.client);
-  expect(size.top).toBe(0);
-
-  // The scroll region has focus, so the keyboard scrolls it (End moves it), then jump to the last line to read it.
+  expect(size.top).toBe(0); // a fresh card starts at the top
   await body.press('End');
   await expect.poll(() => body.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
   await toEnd(body);
-  await expectInScroll(page, `END-${first}`, body);
-
-  // The mouse wheel scrolls it too, and the close control and the card's own link stay usable after scrolling.
+  await expectInScroll(page, `END-${m}`, body);
   await body.evaluate((el) => (el.scrollTop = 0));
-  const box = (await body.boundingBox())!;
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  await page.mouse.wheel(0, 1500);
+  await wheel(page, (await body.boundingBox())!);
   await expect.poll(() => body.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
-  await toEnd(body);
-  await expectInScroll(page, `END-${first}`, body);
-  await expect(panel.locator('.panel-x')).toBeVisible();
-  const link = page.getByRole('link', { name: new RegExp(`Open #${number} on GitHub`) });
-  const [linkBox, bodyBox] = await Promise.all([link.boundingBox(), body.boundingBox()]);
-  expect(linkBox!.y + linkBox!.height).toBeLessThanOrEqual(bodyBox!.y + bodyBox!.height + 1);
-
-  // Opening another card shows its own description, not the last one's.
-  const second = marker();
-  await openLongCard(page, page.request, repo, second);
-  await expectInScroll(page, `START-${second}`, body);
-  await expect(page.getByText(`END-${first}`)).toHaveCount(0);
-
-  // Escape closes the window (the close button is checked above).
   await page.keyboard.press('Escape');
   await expect(panel).toBeHidden();
 
-  // If the demo already has an open PR, its card window works the same way.
-  const pr = (await boardCards(page)).find((c) => c.key.startsWith('pr-'));
-  if (pr) {
-    await expect.poll(() => openCard(page, pr.key), { message: `open ${pr.key}`, timeout: 30_000 }).toBe(true);
-    await expect(panel).toBeVisible();
-    await expect(panel.locator('.panel-title')).toContainText('PR');
-    await page.keyboard.press('Escape');
-    await expect(panel).toBeHidden();
-  }
+  // --- A PR card: the PR's own long body, not its linked issue's. ---
+  await expect.poll(() => openCard(page, `pr-${prA.number}`), { message: `open pr-${prA.number}`, timeout: 30_000 }).toBe(true);
+  await expect(panel).toBeVisible();
+  await expect(page.getByText('START-PR-A')).toHaveCount(1);
+  await expectInScroll(page, 'START-PR-A', body);
+  const linkedIssue = repo.issues.find((i) => i.number === prA.closesIssues[0])!;
+  await expect(page.getByText(linkedIssue.body.trim())).toHaveCount(0); // the issue's body is not shown
+  await expect(panel.locator('.cardview-h', { hasText: `Closes #${linkedIssue.number}` })).toBeVisible();
+
+  // The full body reads: taller than the region, keyboard End moves it, then jump to the last line.
+  const prSize = await body.evaluate((el) => ({ top: el.scrollTop, scroll: el.scrollHeight, client: el.clientHeight }));
+  expect(prSize.scroll).toBeGreaterThan(prSize.client);
+  expect(prSize.top).toBe(0);
+  await body.press('End');
+  await expect.poll(() => body.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+  await toEnd(body);
+  await expectInScroll(page, 'END-PR-A', body);
+  await body.evaluate((el) => (el.scrollTop = 0));
+  await wheel(page, (await body.boundingBox())!);
+  await expect.poll(() => body.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+
+  // The close control and the card's own GitHub link stay reachable after scrolling to the footer.
+  await toEnd(body);
+  await expect(panel.locator('.panel-x')).toBeVisible();
+  const link = page.getByRole('link', { name: new RegExp(`Open PR #${prA.number} on GitHub`) });
+  await expect(link).toBeVisible();
+  const [lb, rb] = await Promise.all([link.boundingBox(), body.boundingBox()]);
+  expect(lb!.y + lb!.height).toBeLessThanOrEqual(rb!.y + rb!.height + 1);
+
+  // --- A PR with no linked issue still shows its description. ---
+  await expect.poll(() => openCard(page, `pr-${prB.number}`), { message: `open pr-${prB.number}`, timeout: 30_000 }).toBe(true);
+  await expect(page.getByText(/closes no issue at all/)).toBeVisible();
+  await expect(panel.locator('.cardview-h', { hasText: 'Closes #' })).toHaveCount(0);
+
+  // --- Switching to another PR shows its own description, not the last one's. ---
+  await expect.poll(() => openCard(page, `pr-${prC.number}`), { message: `open pr-${prC.number}`, timeout: 30_000 }).toBe(true);
+  await expect(page.getByText(/second card to switch to/)).toBeVisible();
+  await expect(page.getByText('START-PR-A')).toHaveCount(0);
+
+  await page.keyboard.press('Escape');
+  await expect(panel).toBeHidden();
 });
 
-test('a long card description fits a narrow phone viewport and scrolls there too', async ({ page }) => {
+test('a long PR description fits a narrow phone viewport and scrolls there (keyboard, wheel and touch)', async ({ page }) => {
   // A phone-sized screen would pick pocket mode: keep the 3D office, whose card window this is.
   await page.setViewportSize({ width: 390, height: 780 });
   await page.addInitScript(() => localStorage.setItem('cubefarm:mode', 'office'));
   await startAt(page, SPOT);
   await enterOffice(page);
-  const repo = await repoOfFloor(page);
-  const m = marker();
-  await openLongCard(page, page.request, repo, m);
+  const { prA } = await state(page);
+  await expect.poll(() => openCard(page, `pr-${prA.number}`), { message: `open pr-${prA.number}`, timeout: 30_000 }).toBe(true);
 
   const panel = page.locator('.cardview');
   const body = page.locator('.cardview .panel-body');
@@ -132,14 +174,57 @@ test('a long card description fits a narrow phone viewport and scrolls there too
   expect(code.x + code.width).toBeLessThanOrEqual(panelBox.x + panelBox.width + 1);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(viewport.width + 1);
 
-  // The whole description still reads, first line to last. The keyboard scrolls the region, then jump to the end.
-  await expectInScroll(page, `START-${m}`, body);
+  // The whole description still reads, first line to last.
+  await expectInScroll(page, 'START-PR-A', body);
   await body.press('End');
   await expect.poll(() => body.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
-  await toEnd(body);
-  await expectInScroll(page, `END-${m}`, body);
+
+  // A finger swipe scrolls it too (overscroll-behavior keeps the page behind it still).
   await body.evaluate((el) => (el.scrollTop = 0));
+  await swipeUp(page, (await body.boundingBox())!);
+  await expect.poll(() => body.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+
+  // And the wheel.
+  await body.evaluate((el) => (el.scrollTop = 0));
+  await wheel(page, (await body.boundingBox())!);
+  await expect.poll(() => body.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+
+  await toEnd(body);
+  await expectInScroll(page, 'END-PR-A', body);
   await expect(panel.locator('.panel-x')).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(panel).toBeHidden();
+});
+
+test('pocket mode opens a card from its Kanban and reads the PR description, closing with focus back', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 780 });
+  await page.goto('/?pocket=1');
+  await expect(page.locator('.pocket')).toBeVisible();
+  const { prA } = await state(page);
+
+  // The Kanban tab, then floor 2 (weather-api), where the card fixtures are.
+  await page.locator('.pk-tabs').getByRole('button', { name: /Kanban/ }).click();
+  await page.getByRole('tab', { name: /weather-api/ }).click();
+
+  // Pocket has no 3D board: a card's Read button opens the same window.
+  const read = page.getByRole('button', { name: new RegExp(`Read PR #${prA.number}: Add a precipitation layer`) });
+  await expect(read).toBeVisible();
+  await read.click();
+
+  const panel = page.locator('.cardview');
+  const body = page.locator('.cardview .panel-body');
+  await expect(panel).toBeVisible();
+  await expect(page.getByText('START-PR-A')).toHaveCount(1);
+  await expectInScroll(page, 'START-PR-A', body);
+
+  // The whole PR description reads in pocket mode too.
+  await body.press('End');
+  await expect.poll(() => body.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+  await toEnd(body);
+  await expectInScroll(page, 'END-PR-A', body);
+
+  // Escape closes, and focus goes back to the Read button that opened it.
+  await page.keyboard.press('Escape');
+  await expect(panel).toBeHidden();
+  await expect(read).toBeFocused();
 });

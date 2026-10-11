@@ -69,6 +69,7 @@ export async function listIssues(fullName: string): Promise<IssueInfo[]> {
 interface RawPull {
   number: number;
   title: string;
+  body: string;
   url: string;
   headRefName: string;
   state: 'OPEN' | 'CLOSED' | 'MERGED';
@@ -89,7 +90,7 @@ interface RawPull {
 }
 
 const PR_FIELDS =
-  'number,title,url,headRefName,headRefOid,state,isDraft,mergeable,mergeStateStatus,reviewDecision,closingIssuesReferences,createdAt,mergedAt,additions,deletions,statusCheckRollup';
+  'number,title,body,url,headRefName,headRefOid,state,isDraft,mergeable,mergeStateStatus,reviewDecision,closingIssuesReferences,createdAt,mergedAt,additions,deletions,statusCheckRollup';
 
 type Check = NonNullable<RawPull['statusCheckRollup']>[number];
 const BAD = ['FAILURE', 'ERROR', 'CANCELLED', 'TIMED_OUT', 'ACTION_REQUIRED', 'STARTUP_FAILURE'];
@@ -117,10 +118,11 @@ export function checkRunOf(rollup: RawPull['statusCheckRollup']): PullInfo['chec
   return { ms: Math.max(0, doneAt - Math.min(...starts)), doneAt };
 }
 
-function toPull(p: RawPull): PullInfo {
+export function toPull(p: RawPull): PullInfo {
   return {
     number: p.number,
     title: p.title,
+    body: p.body ?? '',
     url: p.url,
     headRefName: p.headRefName,
     state: p.state,

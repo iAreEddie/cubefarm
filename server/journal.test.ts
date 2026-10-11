@@ -49,6 +49,7 @@ function agent(patch: Partial<JournalAgent> = {}): JournalAgent {
 const pull = (n: number, state: PullInfo['state']): PullInfo => ({
   number: n,
   title: `PR ${n}`,
+  body: '',
   url: '',
   headRefName: `swarm/issue-${n}-ada`,
   state,

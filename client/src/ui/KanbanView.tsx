@@ -81,7 +81,7 @@ function QaLink({ card }: { card: KanbanCard }) {
   );
 }
 
-export function KanbanView({ repoId, embedded }: { repoId: string; embedded?: boolean }) {
+export function KanbanView({ repoId, embedded, onOpenCard }: { repoId: string; embedded?: boolean; onOpenCard?: (card: KanbanCard) => void }) {
   const repo = useStore((s) => s.repos.find((r) => r.id === repoId));
   const allAgents = useStore((s) => s.agents);
   const qaRecords = useStore((s) => s.qa);
@@ -191,6 +191,12 @@ export function KanbanView({ repoId, embedded }: { repoId: string; embedded?: bo
                 <b>#{c.number}</b>
               )}{' '}
               {c.title}
+              {/* Pocket mode has no 3D board to read a sticky from, so its Kanban cards open the same window. */}
+              {onOpenCard && (
+                <button type="button" className="kcard-open" onClick={() => onOpenCard(c)} aria-label={`Read ${c.prNumber ? 'PR ' : ''}#${c.number}: ${c.title}`}>
+                  Read
+                </button>
+              )}
             </div>
             {render(c)}
           </div>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { demoGrow, demoPastWeek, demoShrink, demoTeam, demoUsage, fixPromptPull, type DemoFloor } from './demo.ts';
+import { createDemoBackend, demoGrow, demoPastWeek, demoShrink, demoTeam, demoUsage, fixPromptPull, type DemoFloor } from './demo.ts';
 import { KEEP_MS, opsView, startOfDay } from './metrics.ts';
 
 describe('fixPromptPull', () => {
@@ -100,5 +100,24 @@ describe("the demo CEO's team sizes", () => {
     expect(demoShrink(floor({ size: 5, free: 3 }, { issuesReadyToStart: 1 }))).toBeNull();
     expect(demoShrink(floor({ size: 5, free: 3 }, { prsAwaitingQa: 1 }))).toBeNull();
     expect(demoShrink(floor({ size: 5, free: 3, pendingLetGos: 2 }))).toBeNull(); // already on their way out
+  });
+});
+
+// The card-window e2e tests open these deterministic fixtures; guard that they keep their shape.
+describe('demo pull request fixtures', () => {
+  it('seeds PRs with their own bodies, one closing no issue, on floor 2', async () => {
+    const backend = createDemoBackend();
+    const issues = await backend.listIssues('demo-co/weather-api');
+    const pulls = (await backend.listPulls('demo-co/weather-api')).filter((p) => p.state === 'OPEN');
+    expect(pulls.length).toBeGreaterThanOrEqual(3);
+
+    const linked = pulls.find((p) => p.closesIssues.length > 0)!;
+    const issue = issues.find((i) => i.number === linked.closesIssues[0])!;
+    expect(linked.body.trim()).not.toBe('');
+    expect(linked.body).not.toBe(issue.body); // the card shows the PR's own body, not the issue's
+
+    const noIssue = pulls.find((p) => p.closesIssues.length === 0)!;
+    expect(noIssue.body.trim()).not.toBe('');
+    expect(noIssue.headRefName.startsWith('swarm/')).toBe(false); // so the office doesn't queue it for QA
   });
 });

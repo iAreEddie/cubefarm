@@ -33,6 +33,36 @@ function issue(n: number, title: string, body: string, fullName: string, labels:
   return { number: n, title, body, url: `https://github.com/${fullName}/issues/${n}`, labels, createdAt: now() };
 }
 
+/**
+ * A PR the fake GitHub already has, for the board and card tests. A non-`swarm/` branch keeps the office from
+ * treating it as its own work (reconcilePulls only queues `swarm/` branches for QA), so it just sits on the board.
+ */
+function seededPull(r: FakeRepo, number: number, title: string, body: string, closesIssues: number[], state: PullInfo['state'] = 'OPEN'): PullInfo {
+  const pr: PullInfo = {
+    number,
+    title,
+    body,
+    url: `https://github.com/${r.fullName}/pull/${number}`,
+    headRefName: `feat/${number}-${r.fullName.split('/')[1]}`,
+    state,
+    isDraft: false,
+    mergeable: 'MERGEABLE',
+    reviewDecision: null,
+    closesIssues,
+    createdAt: now(),
+    mergedAt: null,
+    additions: 20 + number,
+    deletions: number % 7,
+    checks: 'passing',
+    headSha: fakeSha(),
+    mergeState: 'CLEAN',
+    failedChecks: [],
+    pendingChecks: [],
+  };
+  r.pulls.push(pr);
+  return pr;
+}
+
 const repos = new Map<string, FakeRepo>();
 /** Repos made in the demo (new projects, published folders): empty, so no package.json for the preview to fall back on. */
 const bareRepos = new Set<string>();
@@ -113,6 +143,25 @@ seed('demo-co/weather-api', 'Tiny weather REST API', [
   ['Rate limit anonymous callers', '60 requests per minute per IP.'],
   ['OpenAPI spec', 'Publish an OpenAPI 3.1 document at /openapi.json.'],
 ]);
+// A long PR body, several screens of Markdown, for the card window's scroll tests (the first and last lines are
+// markers the e2e spec looks for; the prose says this is the PR's own body, not its linked issue's).
+function longPrBody(marker: string, title: string): string {
+  const lines = [`# ${title}`, '', `START-${marker}`, '', 'This text is the pull request body, not the issue body.', ''];
+  for (let i = 1; i <= 30; i++) lines.push(`Paragraph ${i}: ${'lorem ipsum dolor sit amet '.repeat(4)}`);
+  lines.push('', '## Checklist', '', '- first item', '- second item', '- a [link](https://example.com)', '- inline `code`');
+  lines.push('', '## Code', '', '```ts', `const veryLongLine = '${'y'.repeat(160)}';`, '```');
+  lines.push('', '## End', '', `END-${marker}`);
+  return lines.join('\n');
+}
+
+// Deterministic pull requests on floor 2, for the board and its card window: one closes an issue (its PR body differs
+// from that issue's body), one closes nothing, and a second closes another issue (so a test can switch between two).
+{
+  const r = repos.get('demo-co/weather-api')!;
+  seededPull(r, r.nextNumber++, 'Add a precipitation layer', longPrBody('PR-A', 'Precipitation layer'), [1]);
+  seededPull(r, r.nextNumber++, 'Refactor the response cache', '# Response cache\n\nCaches `/forecast` responses for 60 seconds. This pull request closes no issue at all.', []);
+  seededPull(r, r.nextNumber++, 'Document the rate-limit responses', '# Rate limits\n\nAdds the 429 response to the OpenAPI document. This is the second card to switch to.', [2]);
+}
 
 // ---------- the big company (--floors / --agents, #228) ----------
 
@@ -388,6 +437,7 @@ function fakeSession(opts: SessionOptions, cb: SessionCallbacks, fullName: strin
       repo.pulls.unshift({
         number: n,
         title,
+        body: `Closes #${number}\n\nImplements the change and adds tests.`,
         url,
         headRefName: `swarm/issue-${number}-${path.basename(opts.cwd).replace(/-[0-9a-f]{4}$/, '')}`,
         state: 'OPEN',
@@ -867,6 +917,7 @@ export function createDemoBackend(scale: DemoScale | null = null): Backend {
         r.pulls.unshift({
           number: n,
           title: open.title,
+          body: `Merges the fix for #${open.number}.`,
           url: `https://github.com/${fullName}/pull/${n}`,
           headRefName: `fix/issue-${open.number}`,
           state: 'MERGED',

@@ -150,6 +150,7 @@ const compactIssue = (i: IssueInfo, secrets: readonly string[]): IssueInfo => ({
 const compactPull = (p: PullInfo, secrets: readonly string[]): PullInfo => ({
   number: p.number,
   title: text(p.title, 140, secrets),
+  body: dependencyText(p.body),
   url: p.url,
   headRefName: clip(p.headRefName, 100),
   state: p.state,

@@ -43,6 +43,7 @@ const busyOn = (swarm: Swarm, repoId: string) => swarm.snapshot().agents.filter(
 const openPr = (n: number): PullInfo => ({
   number: n,
   title: `PR ${n}`,
+  body: `Closes #${n}`,
   url: `https://github.com/demo-co/pixel-todo/pull/${n}`,
   headRefName: `swarm/issue-${n}-ada`,
   state: 'OPEN',
