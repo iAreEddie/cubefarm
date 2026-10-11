@@ -1,8 +1,26 @@
 import { describe, expect, it } from 'vitest';
-import { fixGoesTo, pickTester, PREP_HOLD_MS, prepFailure, prepHeld, SELF_QA_WAIT_MS, type FixAuthor } from './handOut.ts';
+import { fixGoesTo, pickTester, PREP_HOLD_MS, prepFailure, prepHeld, qaHasRoom, SELF_QA_WAIT_MS, type FixAuthor } from './handOut.ts';
 
 const author = (o: Partial<FixAuthor> = {}): FixAuthor => ({ status: 'done', branch: 'swarm/issue-192-barbara', prNumber: 198, ...o });
 const HEAD = 'swarm/issue-192-barbara';
+
+describe('qaHasRoom', () => {
+  it('lets one PR be tested at a time by default, and none more while one is running', () => {
+    // Four agents testing at once on an 8-core machine was 27 vitest runs and every core pegged, so the floor tests one
+    // PR at a time unless the manager raises the cap.
+    expect(qaHasRoom([], 1)).toBe(true);
+    expect(qaHasRoom(['queued', 'queued'], 1)).toBe(true);
+    expect(qaHasRoom(['testing'], 1)).toBe(false);
+    expect(qaHasRoom(['testing', 'queued', 'fixing'], 1)).toBe(false);
+  });
+
+  it('allows more when the cap is raised, and any number when it is lifted', () => {
+    expect(qaHasRoom(['testing'], 2)).toBe(true);
+    expect(qaHasRoom(['testing', 'testing'], 2)).toBe(false);
+    expect(qaHasRoom(['testing', 'testing', 'testing'], 0)).toBe(true);
+    expect(qaHasRoom(['testing', 'testing'], -1)).toBe(true); // anything not positive lifts it
+  });
+});
 
 describe('fixGoesTo', () => {
   it('waits for an author still working on the issue whose PR QA failed (#198)', () => {

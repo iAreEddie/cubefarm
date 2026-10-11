@@ -11,7 +11,7 @@ import { afterClose, ASK_AGAIN_MS, closedWhy, closuresHeld, forgettable, issueOp
 import { depsPromptLine, type DepsOutcome } from './deps.ts';
 import { setUpDesk } from './deskSetup.ts';
 import { fixOutcome, MAX_FIX_FAILURES } from './fixOutcome.ts';
-import { fixGoesTo, pickTester, PREP_HOLD_MS, prepFailure, prepHeld, type PrepStrikes, type TesterPairing } from './handOut.ts';
+import { fixGoesTo, pickTester, PREP_HOLD_MS, prepFailure, prepHeld, qaHasRoom, type PrepStrikes, type TesterPairing } from './handOut.ts';
 import { HttpError } from './httpError.ts';
 import { IssueAges } from './issueAges.ts';
 import { issuesResolvedBy, issueTaken } from './issueClaims.ts';
@@ -60,7 +60,7 @@ import { effectiveModel } from '../shared/models.ts';
 import { LEGACY_CEO_CLI, resolveCli, SDK_CLI } from '../shared/cli.ts';
 import { DEFAULT_WEATHER, DEFAULT_WORLD_EVENTS, weatherSettings, worldEventSettings } from '../shared/outside.ts';
 import { DEFAULT_THEME_SETTINGS, dueGreeting, themeSettings } from '../shared/themes.ts';
-import { CEO_ID, DEFAULT_DOG_NAME, DEFAULT_MAX_AGENTS, FLOOR_SEATS, INSTALL_STEP } from '../shared/types.ts';
+import { CEO_ID, DEFAULT_DOG_NAME, DEFAULT_MAX_AGENTS, DEFAULT_MAX_QA_AT_ONCE, FLOOR_SEATS, INSTALL_STEP } from '../shared/types.ts';
 import type {
   AgentActivity,
   AgentCli,
@@ -470,6 +470,7 @@ export class Swarm {
       defaultCli: 'claude',
       scaling: 'approve',
       maxAgents: DEFAULT_MAX_AGENTS,
+      maxQaAtOnce: DEFAULT_MAX_QA_AT_ONCE,
       ceoHeartbeatMin: 60,
       managerName: '',
       companyName: '',
@@ -3404,7 +3405,11 @@ export class Swarm {
         .sort((x, y) => x.updatedAt - y.updatedAt);
     const fixes = waiting('failed', 'fix');
     const owed = new Set(fixes.map((q) => q.devAgentId).filter((id): id is string => !!id));
-    for (const rec of waiting('queued', 'qa')) {
+    // One PR under test at a time by default (settings.maxQaAtOnce): several agents each running the whole suite on one
+    // machine is what pegs its cores. A PR already in 'testing' counts against the cap, so the floor works through QA in
+    // order instead of fanning out; 0 lifts the cap.
+    const room = qaHasRoom(this.state.qa.map((q) => q.status), this.state.settings.maxQaAtOnce);
+    for (const rec of room ? waiting('queued', 'qa') : []) {
       const othersCan = this.state.agents.some((a) => a.repoId === repo.id && a.role !== 'ceo' && a.id !== rec.devAgentId && a.status !== 'stopped');
       const author = rec.devAgentId ? (this.state.agents.find((a) => a.id === rec.devAgentId) ?? null) : null;
       // Prefer a tester whose coding agent (then model) differs from the author's, so cheap builders get a second pair of eyes (#8).
