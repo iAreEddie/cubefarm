@@ -24,7 +24,7 @@ const BASE: UsageRecord = {
   scope: 'message',
   at: Date.UTC(2026, 9, 11, 12, 0, 0),
   provider: 'claude',
-  model: 'claude-opus',
+  model: 'claude-opus-5-5',
   modelRaw: 'claude-opus-5-5',
   usage: { uncachedInput: 1_000_000, cachedInput: 0, cacheWriteInput: 0, output: 0, reasoning: null, reasoningIncludedInOutput: true },
   reportedUsd: null,
@@ -33,13 +33,22 @@ const BASE: UsageRecord = {
 const rec = (over: Partial<UsageRecord>): UsageRecord => ({ ...BASE, ...over });
 
 describe('model aliases and providers', () => {
-  it('maps exact and versioned ids to a canonical family', () => {
-    expect(modelKey('anthropic/claude-opus-5-5')).toBe('claude-opus');
-    expect(modelKey('claude-fable-5-1')).toBe('claude-fable');
-    expect(modelKey('sonnet')).toBe('claude-sonnet');
+  it('keeps the exact Claude version, with or without a provider prefix', () => {
+    expect(modelKey('anthropic/claude-opus-5-5')).toBe('claude-opus-5-5');
+    expect(modelKey('claude-opus-5')).toBe('claude-opus-5');
+    expect(modelKey('claude-opus-4-1-20250805')).toBe('claude-opus-4-1');
+    expect(modelKey('claude-fable-5-1')).toBe('claude-fable-5-1');
+    expect(modelKey('claude-fable-5')).toBe('claude-fable-5');
+    expect(modelKey('claude-3-5-sonnet-20241022')).toBe('claude-sonnet-3-5');
+    expect(modelKey('sonnet')).toBe('claude-sonnet'); // a bare family has no version, so no price
+  });
+
+  it('canonicalizes the other providers and passes unknown ids through', () => {
     expect(modelKey('openai/gpt-5.6-sol')).toBe('gpt-5.6-sol');
     expect(modelKey('gpt-6.1-sol')).toBe('gpt-6.1-sol');
     expect(modelKey('deepseek/deepseek-flash')).toBe('deepseek-flash');
+    expect(modelKey('deepseek/deepseek-v4-pro')).toBe('deepseek-v4-pro');
+    expect(modelKey('opencode/big-pickle')).toBe('big-pickle');
   });
 
   it('infers the provider from the printed id', () => {
@@ -66,15 +75,25 @@ describe('rates', () => {
     expect(rateFor('gpt-5.6-sol')).toBeNull();
     expect(rateFor('gpt-5.6-sol', { 'gpt-5.6-sol': { input: 1, output: 2, source: 'manager', verifiedAt: '2026-10-11' } })?.output).toBe(2);
     // a partial override of a known rate keeps the other prices
-    const sonnet = rateFor('claude-sonnet', { 'claude-sonnet': { output: 16 } });
+    const sonnet = rateFor('claude-sonnet-5-5', { 'claude-sonnet-5-5': { output: 16 } });
     expect(sonnet).toMatchObject({ input: 2, output: 16 });
   });
 
   it('matches the official Claude rates at the cited page (current models, not retired ones)', () => {
-    expect(rateFor('claude-fable')).toMatchObject({ input: 10, cacheWrite: 12.5, cacheRead: 0.25, output: 50, currency: 'USD' });
-    expect(rateFor('claude-opus')).toMatchObject({ input: 4, cacheWrite: 5, cacheRead: 0.2, output: 20, currency: 'USD' });
-    expect(rateFor('claude-sonnet')).toMatchObject({ input: 2, cacheWrite: 2.5, cacheRead: 0.2, output: 10, currency: 'USD' });
-    expect(rateFor('claude-haiku')).toMatchObject({ input: 0.1, cacheWrite: 0.125, cacheRead: 0.01, output: 0.5, currency: 'USD' });
+    expect(rateFor('claude-fable-5-1')).toMatchObject({ input: 10, cacheWrite: 12.5, cacheRead: 0.25, output: 50, currency: 'USD' });
+    expect(rateFor('claude-opus-5-5')).toMatchObject({ input: 4, cacheWrite: 5, cacheRead: 0.2, output: 20, currency: 'USD' });
+    expect(rateFor('claude-sonnet-5')).toMatchObject({ input: 2, cacheWrite: 2.5, cacheRead: 0.2, output: 10, currency: 'USD' });
+    expect(rateFor('claude-haiku-5-5')).toMatchObject({ input: 0.1, cacheWrite: 0.125, cacheRead: 0.01, output: 0.5, currency: 'USD' });
+  });
+
+  it('prices each version by its own page row, never a sibling version', () => {
+    expect(rateFor('claude-opus-5')).toMatchObject({ input: 5, output: 25, cacheRead: 0.5 });
+    expect(rateFor('claude-opus-5-5')).toMatchObject({ input: 4, output: 20, cacheRead: 0.2 });
+    expect(rateFor('claude-sonnet-5')).toMatchObject({ cacheRead: 0.2 });
+    expect(rateFor('claude-sonnet-5-5')).toMatchObject({ cacheRead: 0.1 });
+    expect(rateFor('claude-fable-5')).toMatchObject({ cacheRead: 1 });
+    expect(rateFor('claude-fable-5-1')).toMatchObject({ cacheRead: 0.25 });
+    expect(rateFor('claude-opus-9')).toBeNull(); // an unlisted version stays unavailable
   });
 
   it('matches the official DeepSeek peak rates (off-peak is half)', () => {
@@ -83,25 +102,36 @@ describe('rates', () => {
   });
 
   it('estimates a Claude Fable session from its verified rate instead of calling it unavailable', () => {
-    expect(modelKey('claude-fable-5-1')).toBe('claude-fable');
-    const e = estimateTokensUsd({ uncachedInput: 1_000_000, cachedInput: 0, cacheWriteInput: 0, output: 500_000, reasoning: null, reasoningIncludedInOutput: true }, rateFor('claude-fable')!, null)!;
+    expect(modelKey('claude-fable-5-1')).toBe('claude-fable-5-1');
+    const e = estimateTokensUsd({ uncachedInput: 1_000_000, cachedInput: 0, cacheWriteInput: 0, output: 500_000, reasoning: null, reasoningIncludedInOutput: true }, rateFor('claude-fable-5-1')!, null)!;
     expect(e.usd).toBeCloseTo(10 + 25, 4); // 1M input + 0.5M output
-    const r = resolveUsage(rec({ model: 'claude-fable', modelRaw: 'claude-fable-5-1', provider: 'claude', reportedUsd: null }));
+    const r = resolveUsage(rec({ model: 'claude-fable-5-1', modelRaw: 'claude-fable-5-1', provider: 'claude', reportedUsd: null }));
     expect(r.kind).toBe('estimated');
     expect(r.usd).toBeGreaterThan(0);
+  });
+
+  it('recovers the exact version from modelRaw when a record only stored a family', () => {
+    const r = resolveUsage(rec({ model: 'claude-opus', modelRaw: 'anthropic/claude-opus-5-5', provider: 'claude', reportedUsd: null }));
+    expect(r.kind).toBe('estimated');
+    expect(r.model).toBe('claude-opus-5-5');
+  });
+
+  it('leaves an unknown Claude version unavailable rather than pricing a sibling', () => {
+    const r = resolveUsage(rec({ model: 'claude-opus-9', modelRaw: 'claude-opus-9', provider: 'claude', reportedUsd: null, usage: { uncachedInput: 1000, cachedInput: 0, cacheWriteInput: 0, output: 500, reasoning: null, reasoningIncludedInOutput: true } }));
+    expect(r.kind).toBe('unavailable');
   });
 });
 
 describe('token arithmetic', () => {
   it('prices uncached input, cache read and write, and output separately', () => {
-    const rate = rateFor('claude-opus')!;
+    const rate = rateFor('claude-opus-5-5')!;
     const e = estimateTokensUsd({ uncachedInput: 1_000_000, cachedInput: 2_000_000, cacheWriteInput: 1_000_000, output: 1_000_000, reasoning: null, reasoningIncludedInOutput: true }, rate, BASE.at)!;
     // 4 + 2*0.20 + 5 + 20
     expect(e.usd).toBeCloseTo(4 + 0.4 + 5 + 20, 4);
   });
 
   it('does not count reasoning twice when the provider already folded it into output', () => {
-    const rate = rateFor('claude-opus')!;
+    const rate = rateFor('claude-opus-5-5')!;
     const included = estimateTokensUsd({ uncachedInput: 0, cachedInput: 0, cacheWriteInput: 0, output: 1_000_000, reasoning: 500_000, reasoningIncludedInOutput: true }, rate, BASE.at)!;
     const separate = estimateTokensUsd({ uncachedInput: 0, cachedInput: 0, cacheWriteInput: 0, output: 1_000_000, reasoning: 500_000, reasoningIncludedInOutput: false }, rate, BASE.at)!;
     expect(included.usd).toBeCloseTo(20, 4);
@@ -203,13 +233,13 @@ describe('hourly averages over a fake clock', () => {
   it('divides by elapsed wall-clock hours, idle hours included', () => {
     // One model, $24 of cost spread over records, history spans the full window.
     const records = [
-      resolveUsage(rec({ key: 's1:m1', model: 'claude-opus', reportedUsd: 12, at: now - 20 * HOUR })),
-      resolveUsage(rec({ key: 's1:m2', model: 'claude-opus', reportedUsd: 12, at: now - 1 * HOUR })),
+      resolveUsage(rec({ key: 's1:m1', model: 'claude-opus-5-5', reportedUsd: 12, at: now - 20 * HOUR })),
+      resolveUsage(rec({ key: 's1:m2', model: 'claude-opus-5-5', reportedUsd: 12, at: now - 1 * HOUR })),
     ];
     const h = hourlyByModel(records, now, 24, now - 24 * HOUR);
     expect(h.elapsedHours).toBe(24);
     expect(h.partial).toBe(false);
-    expect(h.rows[0]).toMatchObject({ model: 'claude-opus', usd: 24 });
+    expect(h.rows[0]).toMatchObject({ model: 'claude-opus-5-5', usd: 24 });
     expect(h.rows[0].usdPerHour).toBeCloseTo(1, 4);
   });
 
@@ -226,7 +256,7 @@ describe('hourly averages over a fake clock', () => {
 
   it('groups by model and flags a model with unavailable records', () => {
     const records = [
-      resolveUsage(rec({ key: 's1:m1', model: 'claude-opus', reportedUsd: 6, at: now - HOUR })),
+      resolveUsage(rec({ key: 's1:m1', model: 'claude-opus-5-5', reportedUsd: 6, at: now - HOUR })),
       resolveUsage(rec({ key: 's1:m2', model: 'gpt-5.6-sol', modelRaw: 'gpt-5.6-sol', provider: 'openai', usage: { uncachedInput: 100, cachedInput: 0, cacheWriteInput: 0, output: 50, reasoning: null, reasoningIncludedInOutput: true }, at: now - HOUR })),
     ];
     const h = hourlyByModel(records, now, 24, now - 24 * HOUR);

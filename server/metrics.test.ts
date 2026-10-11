@@ -199,12 +199,12 @@ describe('cost detail (#15)', () => {
   it('reconciles company totals with floors plus the CEO, and excludes unrelated usage', () => {
     const h = emptyHistory();
     h.since = NOW - 10 * HOUR_MS;
-    h.usage.push(usage('o/a', 'claude-opus', 1, NOW - 2 * HOUR_MS), usage('', 'claude-opus', 0.5, NOW - HOUR_MS), usage('gone/repo', 'claude-opus', 7, NOW - HOUR_MS));
+    h.usage.push(usage('o/a', 'claude-opus-5-5', 1, NOW - 2 * HOUR_MS), usage('', 'claude-opus-5-5', 0.5, NOW - HOUR_MS), usage('gone/repo', 'claude-opus-5-5', 7, NOW - HOUR_MS));
     const v = opsView([floor(), floor({ repoId: 'o/b', floor: 2 })], h, NOW);
     expect(v.floors[0].cost!.reportedUsd).toBeCloseTo(1, 6);
     expect(v.cost!.reportedUsd).toBeCloseTo(1.5, 6);
     expect(v.cost!.records).toBe(2); // gone/repo is not a connected floor nor the CEO
-    expect(v.cost!.byModel[0]).toMatchObject({ model: 'claude-opus', usd: 1.5 });
+    expect(v.cost!.byModel[0]).toMatchObject({ model: 'claude-opus-5-5', usd: 1.5 });
     expect(v.cost!.partialHistory).toBe(true); // the record starts inside the 24h window
     expect(v.cost!.elapsedHours).toBeCloseTo(10, 6);
     expect(v.cost!.byModel[0].usdPerHour).toBeCloseTo(0.15, 6);
@@ -213,7 +213,7 @@ describe('cost detail (#15)', () => {
   it('calls the headline a 24-hour total: an older record stays in history but not in the total or rows', () => {
     const h = emptyHistory();
     h.since = NOW - 30 * HOUR_MS;
-    h.usage.push(usage('o/a', 'claude-opus', 2, NOW - HOUR_MS), usage('o/a', 'claude-opus', 5, NOW - 30 * HOUR_MS));
+    h.usage.push(usage('o/a', 'claude-opus-5-5', 2, NOW - HOUR_MS), usage('o/a', 'claude-opus-5-5', 5, NOW - 30 * HOUR_MS));
     const v = opsView([floor()], h, NOW);
     expect(v.cost!.reportedUsd).toBeCloseTo(2, 6); // the 30h-old record is outside the window
     expect(v.cost!.records).toBe(1);
@@ -223,7 +223,7 @@ describe('cost detail (#15)', () => {
 
   it('deduplicates a resumed session re-read at the office level so the total never inflates', () => {
     const h = emptyHistory();
-    const record = usage('o/a', 'claude-opus', 0.0042, NOW - HOUR_MS);
+    const record = usage('o/a', 'claude-opus-5-5', 0.0042, NOW - HOUR_MS);
     recordUsage(h, 'o/a', [record], NOW);
     recordUsage(h, 'o/a', [record], NOW);
     const v = opsView([floor()], h, NOW);

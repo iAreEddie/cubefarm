@@ -14,7 +14,8 @@ terminal: every number comes from a CLI's structured session data or its own rep
 
 Tokens are normalized so nothing is counted twice: cached input and cache creation are kept apart from uncached input,
 and reasoning is added only when a provider reports it outside output. Each record carries a timestamp, a model
-(normalized from whatever the CLI printed) and the source it came from.
+(normalized from whatever the CLI printed) and the source it came from. The model keeps Claude's *exact* version, so
+Opus 5 and Opus 5.5, or Sonnet 5 and Sonnet 5.5, are never priced as one another.
 
 ## Reported, estimated, free, unavailable
 
@@ -30,8 +31,9 @@ and reasoning is added only when a provider reports it outside output. Each reco
   OpenCode's `cost: 0` for a model it has no rate for is treated as a placeholder, not as free.
 
 Models the office has no verified rate for (Codex's Sol ids among them) stay unavailable rather than borrowing a
-similarly named model's rate. A manager can supply a rate for a custom or unpublished id to the accounting API
-(`rateFor`, `RateOverrides`).
+similarly named model's rate. The same holds for a Claude version the page doesn't list: rates are pinned per exact
+version, never approximated from the family. A manager can supply a rate for a custom or unpublished id to the
+accounting API (`rateFor`, `RateOverrides`).
 
 ## Where it shows
 

@@ -100,12 +100,26 @@ export const EMPTY_USAGE: TokenUsage = { uncachedInput: null, cachedInput: null,
 
 // ---------- canonical models and aliases ----------
 
-const CLAUDE_ALIASES: [RegExp, string][] = [
-  [/fable/i, 'claude-fable'],
-  [/opus/i, 'claude-opus'],
-  [/sonnet/i, 'claude-sonnet'],
-  [/haiku/i, 'claude-haiku'],
-];
+const CLAUDE_FAMILY = /(opus|sonnet|haiku|fable|mythos)/;
+
+/**
+ * A Claude model id's canonical form: family plus the exact version it names, so versions the page prices
+ * differently are never collapsed into one another. "anthropic/claude-opus-5-5" -> "claude-opus-5-5"; the older
+ * "claude-3-5-sonnet-20241022" -> "claude-sonnet-3-5". A trailing date is ignored. A bare family name ("sonnet") has
+ * no version to pin a price to, so it becomes "claude-sonnet" and stays unrateable until a manager overrides it.
+ */
+function claudeKey(tail: string): string | null {
+  const s = tail.toLowerCase();
+  // The version leads the family: claude-3-5-sonnet, claude-3-opus.
+  let m = /(\d{1,2})[-_.](\d{1,2})[-_.]?(opus|sonnet|haiku|fable|mythos)/.exec(s);
+  if (m) return `claude-${m[3]}-${m[1]}-${m[2]}`;
+  // The version follows the family: claude-opus-5-5, claude-sonnet-5, claude-haiku-4.5 (a date suffix is not a version).
+  m = /(opus|sonnet|haiku|fable|mythos)[-_. ]?(\d{1,2})(?:[-_.](\d{1,2}))?/.exec(s);
+  if (m) return `claude-${m[1]}-${m[2]}${m[3] ? `-${m[3]}` : ''}`;
+  m = CLAUDE_FAMILY.exec(s);
+  return m ? `claude-${m[1]}` : null;
+}
+
 const OPENAI_ALIASES: [RegExp, string][] = [
   [/gpt[-_.\s]?6[.\-]1[-_.\s]?sol/i, 'gpt-6.1-sol'],
   [/gpt[-_.\s]?5[.\-]6[-_.\s]?sol/i, 'gpt-5.6-sol'],
@@ -135,12 +149,15 @@ export function providerFor(raw: string): CostProvider {
   return 'unknown';
 }
 
-/** A printed model id's canonical form, e.g. "anthropic/claude-opus-5-5" -> "claude-opus". Unknown ids pass through. */
+/**
+ * A printed model id's canonical form. Claude keeps the exact version it names (`claudeKey`); DeepSeek's legacy
+ * Flash names fold into `deepseek-flash`; anything else passes through lowercased and stays unrateable.
+ */
 export function modelKey(raw: string): string {
   const s = raw.trim();
   if (!s) return '';
   const tail = s.includes('/') ? s.slice(s.lastIndexOf('/') + 1) : s;
-  return alias(CLAUDE_ALIASES, tail) ?? alias(OPENAI_ALIASES, tail) ?? alias(DEEPSEEK_ALIASES, tail) ?? tail.toLowerCase();
+  return claudeKey(tail) ?? alias(DEEPSEEK_ALIASES, tail) ?? alias(OPENAI_ALIASES, tail) ?? tail.toLowerCase();
 }
 
 // ---------- verified rates ----------
@@ -159,100 +176,80 @@ const CN_HOLIDAYS_2026 = [
   '2026-10-01', '2026-10-02', '2026-10-03', '2026-10-04', '2026-10-05', '2026-10-06', '2026-10-07',
 ];
 
+const CLAUDE_SOURCE = 'https://platform.claude.com/docs/en/about-claude/pricing';
+const DEEPSEEK_SOURCE = 'https://api-docs.deepseek.com/quick_start/pricing/';
+const VERIFIED_AT = '2026-10-11';
+
 /**
- * Rates verified at implementation time. Claude is the CLI/provider; the model is one of its families. Codex's Sol
- * models have no published rate the office could verify, so they carry none: a manager override supplies one, else
- * the cost shows as unavailable rather than guessed from a similarly named model.
+ * One exact Claude model version at the cited page, in USD per MTok. `cacheWrite` is the 5-minute write and
+ * `cacheRead` the page's cache-hit price. A version not listed here has no rate: the office shows it unavailable
+ * rather than borrowing a sibling version's price, and a manager `RateOverrides` entry can supply one.
+ */
+function claudeRate(model: string, input: number, cacheRead: number, cacheWrite: number, output: number): RateEntry {
+  return {
+    provider: 'claude',
+    model,
+    currency: 'USD',
+    input,
+    cacheRead,
+    cacheWrite,
+    output,
+    source: CLAUDE_SOURCE,
+    verifiedAt: VERIFIED_AT,
+    subscription: true,
+    note: 'API-equivalent value of a Claude Code subscription session; not an extra charge per session.',
+  };
+}
+
+/** DeepSeek's peak price and the shared peak/off-peak tier rule (off-peak is half, weekends and Chinese holidays too). */
+function deepseekRate(model: string, input: number, cacheRead: number, output: number, note: string): RateEntry {
+  return {
+    provider: 'deepseek',
+    model,
+    currency: 'USD',
+    input,
+    cacheRead,
+    cacheWrite: input, // DeepSeek has no separate cache-write price: a write is a cache miss
+    output,
+    source: DEEPSEEK_SOURCE,
+    verifiedAt: VERIFIED_AT,
+    note,
+    tiers: [
+      { fromHourUtc: 1, toHourUtc: 4, multiplier: 1, label: 'peak', weekdaysOnly: true },
+      { fromHourUtc: 6, toHourUtc: 10, multiplier: 1, label: 'peak', weekdaysOnly: true },
+    ],
+    offPeakMultiplier: 0.5,
+    holidays: CN_HOLIDAYS_2026,
+  };
+}
+
+/**
+ * Rates verified at implementation time, per exact model version. Claude's family regexes once collapsed versions, so
+ * Opus 5 borrowed Opus 5.5's price; each version now carries its own entry. Codex's Sol ids have no published rate the
+ * office could verify, so they carry none: the cost shows as unavailable rather than guessed from a similar name.
  */
 export const RATES: RateEntry[] = [
-  {
-    provider: 'claude',
-    model: 'claude-fable',
-    currency: 'USD',
-    input: 10,
-    cacheRead: 0.25,
-    cacheWrite: 12.5, // the 5-minute cache write; the 1-hour write is $20
-    output: 50,
-    source: 'https://platform.claude.com/docs/en/about-claude/pricing',
-    verifiedAt: '2026-10-11',
-    subscription: true,
-    note: 'Claude Fable 5.1 (5-minute cache write; cache hits are 0.025x input). API-equivalent value of a Claude Code subscription session; not an extra charge per session.',
-  },
-  {
-    provider: 'claude',
-    model: 'claude-opus',
-    currency: 'USD',
-    input: 4,
-    cacheRead: 0.2,
-    cacheWrite: 5, // the 5-minute cache write; the 1-hour write is $8
-    output: 20,
-    source: 'https://platform.claude.com/docs/en/about-claude/pricing',
-    verifiedAt: '2026-10-11',
-    subscription: true,
-    note: 'Claude Opus 5.5, not the retired Opus 4/4.1 (5-minute cache write). API-equivalent value of a Claude Code subscription session; not an extra charge per session.',
-  },
-  {
-    provider: 'claude',
-    model: 'claude-sonnet',
-    currency: 'USD',
-    input: 2,
-    cacheRead: 0.2,
-    cacheWrite: 2.5, // the 5-minute cache write; the 1-hour write is $4
-    output: 10,
-    source: 'https://platform.claude.com/docs/en/about-claude/pricing',
-    verifiedAt: '2026-10-11',
-    subscription: true,
-    note: 'Claude Sonnet 5, not the retired Sonnet 4.x (5-minute cache write). API-equivalent value of a Claude Code subscription session; not an extra charge per session.',
-  },
-  {
-    provider: 'claude',
-    model: 'claude-haiku',
-    currency: 'USD',
-    input: 0.1,
-    cacheRead: 0.01,
-    cacheWrite: 0.125, // the 5-minute cache write; the 1-hour write is $0.20
-    output: 0.5,
-    source: 'https://platform.claude.com/docs/en/about-claude/pricing',
-    verifiedAt: '2026-10-11',
-    subscription: true,
-    note: 'Claude Haiku 5.5, prompts up to 100,000 tokens (5-minute cache write). API-equivalent value of a Claude Code subscription session; not an extra charge per session.',
-  },
-  {
-    provider: 'deepseek',
-    model: 'deepseek-flash',
-    currency: 'USD',
-    input: 0.3,
-    cacheRead: 0.006,
-    cacheWrite: 0.3, // DeepSeek has no separate cache-write price: a write is a cache miss
-    output: 1.2,
-    source: 'https://api-docs.deepseek.com/quick_start/pricing/',
-    verifiedAt: '2026-10-11',
-    note: 'deepseek-flash (DeepSeek-V4.1-Flash) peak price; off-peak is half. Legacy names deepseek-v4-flash and deepseek-v4-flash-vision-exp bill at this rate. Peak 01:00-04:00 and 06:00-10:00 UTC Mon-Fri, excluding Chinese public holidays.',
-    tiers: [
-      { fromHourUtc: 1, toHourUtc: 4, multiplier: 1, label: 'peak', weekdaysOnly: true },
-      { fromHourUtc: 6, toHourUtc: 10, multiplier: 1, label: 'peak', weekdaysOnly: true },
-    ],
-    offPeakMultiplier: 0.5,
-    holidays: CN_HOLIDAYS_2026,
-  },
-  {
-    provider: 'deepseek',
-    model: 'deepseek-v4-pro',
-    currency: 'USD',
-    input: 1.32,
-    cacheRead: 0.044,
-    cacheWrite: 1.32,
-    output: 3.96,
-    source: 'https://api-docs.deepseek.com/quick_start/pricing/',
-    verifiedAt: '2026-10-11',
-    note: 'deepseek-v4-pro (DeepSeek-V4-Pro-0813) peak price; off-peak is half. Peak 01:00-04:00 and 06:00-10:00 UTC Mon-Fri, excluding Chinese public holidays.',
-    tiers: [
-      { fromHourUtc: 1, toHourUtc: 4, multiplier: 1, label: 'peak', weekdaysOnly: true },
-      { fromHourUtc: 6, toHourUtc: 10, multiplier: 1, label: 'peak', weekdaysOnly: true },
-    ],
-    offPeakMultiplier: 0.5,
-    holidays: CN_HOLIDAYS_2026,
-  },
+  // Claude, current versions first, then older ones the page still prices (retired versions keep their own rate).
+  claudeRate('claude-fable-5-1', 10, 0.25, 12.5, 50),
+  claudeRate('claude-fable-5', 10, 1, 12.5, 50),
+  claudeRate('claude-opus-5-5', 4, 0.2, 5, 20),
+  claudeRate('claude-opus-5', 5, 0.5, 6.25, 25),
+  claudeRate('claude-opus-4-8', 5, 0.5, 6.25, 25),
+  claudeRate('claude-opus-4-7', 5, 0.5, 6.25, 25),
+  claudeRate('claude-opus-4-6', 5, 0.5, 6.25, 25),
+  claudeRate('claude-opus-4-5', 5, 0.5, 6.25, 25),
+  claudeRate('claude-opus-4-1', 15, 1.5, 18.75, 75),
+  claudeRate('claude-opus-4', 15, 1.5, 18.75, 75),
+  claudeRate('claude-sonnet-5-5', 2, 0.1, 2.5, 10),
+  claudeRate('claude-sonnet-5', 2, 0.2, 2.5, 10),
+  claudeRate('claude-sonnet-4-6', 3, 0.3, 3.75, 15),
+  claudeRate('claude-sonnet-4-5', 3, 0.3, 3.75, 15),
+  claudeRate('claude-sonnet-4', 3, 0.3, 3.75, 15),
+  claudeRate('claude-haiku-5-5', 0.1, 0.01, 0.125, 0.5),
+  claudeRate('claude-haiku-4-5', 1, 0.1, 1.25, 5),
+  claudeRate('claude-haiku-3-5', 0.8, 0.08, 1, 4),
+  deepseekRate('deepseek-flash', 0.3, 0.006, 1.2, 'deepseek-flash (DeepSeek-V4.1-Flash) peak price; off-peak is half. Legacy names deepseek-v4-flash and deepseek-v4-flash-vision-exp bill at this rate. Peak 01:00-04:00 and 06:00-10:00 UTC Mon-Fri, excluding Chinese public holidays.'),
+  deepseekRate('deepseek-v4-pro', 1.32, 0.044, 3.96, 'deepseek-v4-pro (DeepSeek-V4-Pro-0813) peak price; off-peak is half. Peak 01:00-04:00 and 06:00-10:00 UTC Mon-Fri, excluding Chinese public holidays.'),
 ];
 
 const byModel = new Map(RATES.map((r) => [r.model, r]));
@@ -328,20 +325,37 @@ export function estimateTokensUsd(usage: TokenUsage, rate: RateEntry, at: number
   return { usd: usd * tier.multiplier, tier: tier.label };
 }
 
+/** True when a verified rate or a manager override exists for this canonical id. */
+function hasRate(model: string, overrides: RateOverrides): boolean {
+  return byModel.has(model) || !!overrides[model];
+}
+
+/**
+ * The canonical model to price a record by: its own id when it has a rate, otherwise one recovered from the id the
+ * provider printed (an older record may have stored a bare family). Never invents a version it can't identify.
+ */
+function pricedModel(record: UsageRecord, overrides: RateOverrides): string {
+  if (hasRate(record.model, overrides)) return record.model;
+  const fromRaw = record.modelRaw ? modelKey(record.modelRaw) : '';
+  return fromRaw && hasRate(fromRaw, overrides) ? fromRaw : record.model;
+}
+
 /**
  * Resolve one record: reported cost wins and is labelled as reported; a provider's zero is free only when it said so;
  * otherwise estimate from measured tokens and a verified rate; anything else is unavailable (never zero).
  */
 export function resolveUsage(record: UsageRecord, overrides: RateOverrides = {}): ResolvedUsage {
-  const rate = rateFor(record.model, overrides) ?? undefined;
-  if (record.reportedUsd !== null && record.reportedUsd > 0) return { ...record, kind: 'reported', usd: round4(record.reportedUsd), rate };
-  if (record.reportedUsd === 0 && record.free) return { ...record, kind: 'free', usd: 0, rate };
+  const model = pricedModel(record, overrides);
+  const rate = rateFor(model, overrides) ?? undefined;
+  const base = model === record.model ? record : { ...record, model };
+  if (base.reportedUsd !== null && base.reportedUsd > 0) return { ...base, kind: 'reported', usd: round4(base.reportedUsd), rate };
+  if (base.reportedUsd === 0 && base.free) return { ...base, kind: 'free', usd: 0, rate };
   // A reported 0 with tokens and a known rate is OpenCode's "no rate" placeholder: estimate it instead.
   if (rate) {
-    const e = estimateTokensUsd(record.usage, rate, record.at);
+    const e = estimateTokensUsd(base.usage, rate, base.at);
     if (e) {
-      const resolved: ResolvedUsage = { ...record, kind: 'estimated', usd: round4(e.usd), rate, tier: e.tier };
-      if (record.at === null && rate.tiers?.length) {
+      const resolved: ResolvedUsage = { ...base, kind: 'estimated', usd: round4(e.usd), rate, tier: e.tier };
+      if (base.at === null && rate.tiers?.length) {
         // The peak applied: expose [off-peak, peak] so an unknown-time estimate is honest about the spread.
         const peak = Math.max(...rate.tiers.map((t) => t.multiplier));
         const off = Math.min(peak, rate.offPeakMultiplier ?? 1);
@@ -350,7 +364,7 @@ export function resolveUsage(record: UsageRecord, overrides: RateOverrides = {})
       return resolved;
     }
   }
-  return { ...record, kind: 'unavailable', usd: 0, rate };
+  return { ...base, kind: 'unavailable', usd: 0, rate };
 }
 
 const round4 = (n: number) => Math.round(n * 1e4) / 1e4;

@@ -11,7 +11,7 @@ describe('Claude Code transcript', () => {
 
   it('reads one record per assistant message, cache kept apart, and skips a message without usage', () => {
     expect(records).toHaveLength(4); // msg_opus_1 twice, msg_sonnet_1 twice; msg_nousage skipped
-    const opus = records.find((r) => r.model === 'claude-opus' && r.usage.output === 500)!;
+    const opus = records.find((r) => r.model === 'claude-opus-5-5' && r.usage.output === 500)!;
     expect(opus).toMatchObject({
       provider: 'claude',
       modelRaw: 'claude-opus-5-5',
@@ -39,6 +39,27 @@ describe('Claude Code transcript', () => {
     expect(s.reportedUsd).toBeCloseTo(0.061, 6);
     expect(s.estimatedUsd).toBe(0); // the report covers the session
     expect(s.records).toHaveLength(1);
+  });
+});
+
+describe('exact Claude versions through the parser', () => {
+  const line = (id: string, model: string) =>
+    JSON.stringify({ type: 'assistant', uuid: id, timestamp: '2026-10-11T10:00:00.000Z', message: { id, type: 'message', role: 'assistant', model, usage: { input_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 1_000_000, output_tokens: 0 } } });
+  const records = parseClaudeTranscript(
+    [line('m1', 'claude-opus-5'), line('m2', 'claude-opus-5-5'), line('m3', 'anthropic/claude-sonnet-5'), line('m4', 'claude-sonnet-5-5'), line('m5', 'claude-opus-9')].join('\n'),
+    { sessionId: 'sess-versions' },
+  );
+  const byModel = Object.fromEntries(summariseSession(records).resolved.map((r) => [r.model, r]));
+
+  it('keeps each version apart and prices it by its own row, provider prefix stripped', () => {
+    expect(byModel['claude-opus-5'].usd).toBeCloseTo(0.5, 6); // cache read at 0.1x of $5
+    expect(byModel['claude-opus-5-5'].usd).toBeCloseTo(0.2, 6); // 0.05x of $4
+    expect(byModel['claude-sonnet-5'].usd).toBeCloseTo(0.2, 6);
+    expect(byModel['claude-sonnet-5-5'].usd).toBeCloseTo(0.1, 6);
+  });
+
+  it('leaves an unknown Claude version unavailable rather than pricing a sibling', () => {
+    expect(byModel['claude-opus-9'].kind).toBe('unavailable');
   });
 });
 
@@ -119,7 +140,7 @@ describe('hourly cost by model', () => {
     const records = parseClaudeTranscript(fixture('claude-transcript.jsonl'), { sessionId: 's1' }).map((r) => ({ ...r, at: now - 2 * 3_600_000 }));
     const s = summariseSession(records);
     const h = hourlyByModel(s.resolved, now, 24, now - 24 * 3_600_000);
-    expect(h.rows.map((r) => r.model).sort()).toEqual(['claude-opus', 'claude-sonnet']);
+    expect(h.rows.map((r) => r.model).sort()).toEqual(['claude-opus-5-5', 'claude-sonnet-5']);
     expect(h.total.usdPerHour).toBeCloseTo(h.total.usd / 24, 6);
   });
 });
@@ -131,7 +152,7 @@ function baseSession(sessionId: string, reportedUsd: number, at: number) {
     scope: 'session' as const,
     at,
     provider: 'claude' as const,
-    model: 'claude-opus',
+    model: 'claude-opus-5-5',
     modelRaw: 'claude-opus-5-5',
     usage: { uncachedInput: 100, cachedInput: 0, cacheWriteInput: 0, output: 100, reasoning: null, reasoningIncludedInOutput: true },
     reportedUsd,
