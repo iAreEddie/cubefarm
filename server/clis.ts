@@ -50,16 +50,38 @@ export function resolveCommand(name: string, env: NodeJS.ProcessEnv = process.en
 }
 
 /**
+ * A shim that runs one program by an absolute path, which is what a CLI's own Windows installer writes (Codex's does),
+ * as opposed to npm's `node "%dp0%\…"`. The program is quoted, so: the first quoted absolute path, then whatever
+ * arguments follow it. null when the line doesn't look like that at all.
+ */
+function unwrapAbsoluteShim(line: string): { file: string; args: string[] } | null {
+  const program = line.match(/"([A-Za-z]:\\[^"]+\.(?:exe|cmd|bat|com|js))"/i);
+  if (!program) return null;
+  // Everything after the path: the shim's own fixed arguments, minus cmd's %*/%1 placeholders, which only forward ours.
+  const args = line
+    .slice(program.index! + program[0].length)
+    .trim()
+    .split(/\s+/)
+    .filter((a) => a && !/^%\*?$|^%\d$/.test(a));
+  return { file: program[1], args };
+}
+
+/**
  * npm installs Windows CLIs as .cmd shims. Running one puts every argument through cmd.exe, which expands %VARS% and
- * trips over quotes in a prompt, so run what the shim runs instead: the package's .exe, or node on its script.
+ * breaks on a multi-line argument: cmd.exe hands the CLI only the first line, so a prompt whose text starts on its
+ * second line arrives empty. Run what the shim runs instead — the program it points at.
+ *
+ * Both shapes are handled: npm's `node "%dp0%\…\cli.js"`, and the absolute path a CLI's own installer writes.
  */
 export function unwrapCmdShim(shimPath: string, text: string): { file: string; args: string[] } | null {
-  const line = text.split(/\r?\n/).find((l) => /%\*\s*$/.test(l));
-  if (!line) return null;
   const dir = path.dirname(shimPath);
+  // The command line, not the `@echo off` preamble: it is the line that forwards its arguments (%*).
+  const line = text.split(/\r?\n/).find((l) => /[^%]%\*\s*$/.test(l.trim()) && !l.trim().startsWith('@'));
+  if (!line) return null;
   const targets = [...line.matchAll(/"%dp0%\\([^"]+)"/g)].map((m) => path.join(dir, m[1]));
   const target = targets[targets.length - 1];
-  if (!target) return null;
+  // A program run by its absolute path: the installer's own shim.
+  if (!target) return unwrapAbsoluteShim(line);
   if (/\.exe$/i.test(target)) return { file: target, args: [] };
   if (!/\.[cm]?js$/i.test(target)) return null;
   const between = line.slice(line.indexOf('"%_prog%"') + '"%_prog%"'.length, line.lastIndexOf(`"%dp0%\\`));
@@ -208,6 +230,11 @@ export interface LaunchContext {
    * (1.x). Left out in tests and by any other caller: the flag that exists in both lines.
    */
   opencodeAuto?: boolean;
+  /**
+   * Codex only: the session's own CODEX_HOME, holding the config.toml that gives it the office's MCP tools. Codex
+   * cannot be handed an MCP server through `-c` (see codexConfigToml), so it reads this folder instead.
+   */
+  codexHome?: string;
 }
 
 export interface Launch {
@@ -244,6 +271,29 @@ export function officeMcpNodePath(resolve: (id: string) => string = (id) => crea
 /** What an MCP server the office launches needs in its environment: where to find the SDK, when that is known. */
 export function officeMcpEnv(nodePath: string): Record<string, string> {
   return nodePath ? { NODE_PATH: nodePath } : {};
+}
+
+/**
+ * Codex saying it cannot find the session it was asked to resume, which exits it. Codex keeps sessions inside its own
+ * CODEX_HOME, so one the office remembers may simply not be there any more — the office forgets the id and lets the
+ * next session start fresh, rather than failing the same way on every job.
+ */
+export function lostCodexSession(screen: string): boolean {
+  return /No saved session found with ID/i.test(screen);
+}
+
+/**
+ * The config.toml that gives a Codex session the office's MCP tools.
+ *
+ * Codex cannot be told about an MCP server on the command line: a `-c` value is parsed as TOML, and every table-shaped
+ * value arrives as a string ("invalid type: string …, expected struct RawMcpServerConfig"), which fails the whole
+ * bootstrap config and leaves the session with no MCP servers at all. So a per-session CODEX_HOME carries it instead,
+ * which also keeps the manager's own Codex config untouched.
+ *
+ * JSON.stringify doubles backslashes, which is exactly what a TOML basic string wants for a Windows path.
+ */
+export function codexConfigToml(office: { command: string; args: string[] }): string {
+  return `[mcp_servers.office]\ncommand = ${JSON.stringify(office.command)}\nargs = [${office.args.map((a) => JSON.stringify(a)).join(', ')}]\n`;
 }
 
 /**
@@ -308,6 +358,10 @@ export function launchArgs(id: AgentCli, ctx: LaunchContext): Launch {
     }
     case 'codex': {
       const toml = (s: string) => JSON.stringify(s); // a JSON string is a valid TOML basic string
+      // A -c value is parsed as TOML, so an inline table uses `key=value`, never JSON's `"key":value`: with a colon
+      // Codex fails the whole config ("invalid type: string …, expected struct RawMcpServerConfig") and the session
+      // starts with no MCP servers at all — the CEO had no office tools and could not see a floor.
+      const table = (o: Record<string, unknown>) => `{${Object.entries(o).map(([k, v]) => `${k}=${Array.isArray(v) ? `[${v.map(toml).join(',')}]` : toml(String(v))}`).join(',')}}`;
       const args = [
         '--no-alt-screen',
         // Without this, an install whose CLI package doesn't match its executable refuses to start at all: "Error: the
@@ -321,16 +375,24 @@ export function launchArgs(id: AgentCli, ctx: LaunchContext): Launch {
         `developer_instructions=${toml(ctx.systemAppend)}`,
         ...(ctx.model ? ['-m', ctx.model] : []),
         ...(ctx.effort ? ['-c', `model_reasoning_effort=${toml(EFFORT_CODEX[ctx.effort])}`] : []),
-        ...(ctx.browser ? ['-c', `mcp_servers.playwright={command=${toml(ctx.browser.command)},args=[${ctx.browser.args.map(toml).join(',')}]}`] : []),
-        // The office's tools, bridged from stdio to the office's HTTP endpoint (OFFICE_MCP_SOURCE): the CEO's tools.
-        ...(ceoOffice(ctx) ? ['-c', `mcp_servers.office={command=${toml(ctx.office.command)},args=[${ctx.office.args.map(toml).join(',')}]}`] : []),
+        ...(ctx.browser ? ['-c', `mcp_servers.playwright=${table({ command: ctx.browser.command, args: ctx.browser.args })}`] : []),
+        // The office's tools come from the session's CODEX_HOME (codexConfigToml), not from here: -c cannot express
+        // an MCP server table, so this line is deliberately absent. See officeMcpEnv for NODE_PATH.
         ...CODEX_HOOK_EVENTS.flatMap((e) => ['-c', `hooks.${e}=[{hooks=[{type="command",command=${toml(codexHookCommand(process.execPath, ctx.codexHook))},timeout=10}]}]`]),
         // Like the manager's own Codex, but it can't stop to ask: no approvals and no sandbox (its sandbox can't reach
         // the credential store, so git and gh fail in it).
         '--dangerously-bypass-approvals-and-sandbox',
       ];
       // `resume` takes its own flags the same way, with the session id and then the prompt.
-      return { args: ctx.resumeId ? ['resume', ...args, ctx.resumeId, ctx.prompt] : [...args, '--', ctx.prompt], env: { CUBEFARM_HOOK_URL: ctx.notify.url } };
+      // NODE_PATH: Codex inherits the office's environment, and its MCP subprocesses inherit Codex's, so this is how
+      // the office tools bridge (officeMcpSource) finds the SDK it needs from outside cubefarm. OpenCode gets the same
+      // value through its own config's `environment`.
+      const env: Record<string, string> = {
+        CUBEFARM_HOOK_URL: ctx.notify.url,
+        ...(ctx.codexHome ? { CODEX_HOME: ctx.codexHome } : {}),
+        ...(ceoOffice(ctx) ? officeMcpEnv(ctx.office.nodePath) : {}),
+      };
+      return { args: ctx.resumeId ? ['resume', ...args, ctx.resumeId, ctx.prompt] : [...args, '--', ctx.prompt], env };
     }
     case 'opencode': {
       // The manager's own config is replaced wholesale (OPENCODE_CONFIG_CONTENT), so every server it should have is
@@ -524,6 +586,11 @@ export default async function CubefarmPlugin({ client } = {}) {
  * Deployed as: node office-mcp.cjs <office mcp url>
  */
 export const OFFICE_MCP_SOURCE = String.raw`// cubefarm: the office's tools (mcp__office__*) for a CLI that starts its own MCP servers.
+// This file is deployed OUTSIDE cubefarm (the office's bin folder), so it cannot resolve the MCP SDK by walking up from
+// itself, and it cannot rely on NODE_PATH either: Codex spawns its MCP servers with an environment of its own, without
+// what the office set for the session — measured, not assumed. The SDK's folder is written into the file instead.
+const SDK_DIR = '__SDK_DIR__';
+if (SDK_DIR) module.paths.unshift(SDK_DIR);
 const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
 const { StreamableHTTPClientTransport } = require('@modelcontextprotocol/sdk/client/streamableHttp.js');
 const { Server } = require('@modelcontextprotocol/sdk/server/index.js');
@@ -553,3 +620,12 @@ main().catch((err) => {
   process.exit(1);
 });
 `;
+
+/**
+ * The bridge as it is deployed: the same source with the SDK's folder filled in. Without it the bridge starts, cannot
+ * require the SDK, and exits — leaving a CEO that answers but has no office tools at all.
+ */
+export function officeMcpSource(sdkDir: string, source = OFFICE_MCP_SOURCE): string {
+  // A JSON string is a safe JS string literal; only the one placeholder is replaced.
+  return source.replace("'__SDK_DIR__'", JSON.stringify(sdkDir));
+}

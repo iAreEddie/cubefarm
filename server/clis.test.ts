@@ -3,7 +3,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import { describe, expect, it } from 'vitest';
-import { CODEX_HOOK_EVENTS, codexHookCommand, CROSS_TURN_TOOLS, hookReviewKey, interruptions, launchArgs, OFFICE_MCP_SOURCE, officeMcpEnv, officeMcpNodePath, oneAtATime, opencodeMajor, opencodePermission, opencodeUsesAuto, parseOpencodeModels, trustKey, unwrapCmdShim, type LaunchContext } from './clis.ts';
+import { CODEX_HOOK_EVENTS, codexConfigToml, codexHookCommand, CROSS_TURN_TOOLS, hookReviewKey, interruptions, launchArgs, OFFICE_MCP_SOURCE, officeMcpEnv, officeMcpNodePath, officeMcpSource, oneAtATime, opencodeMajor, opencodePermission, opencodeUsesAuto, parseOpencodeModels, trustKey, unwrapCmdShim, type LaunchContext } from './clis.ts';
 import { describeOfficeTool, describeTool, newScreenshots, screenshotFile, summariseResult } from './agentRunner.ts';
 
 const nodeRequire = createRequire(import.meta.url);
@@ -151,6 +151,27 @@ describe('launchArgs', () => {
     expect(env.CUBEFARM_HOOK_URL).toBe('http://127.0.0.1:1/api/hooks/t');
   });
 
+  it("gives a Codex CEO the SDK path its office-tools bridge needs", () => {
+    // The bridge is deployed to the office's folder, outside cubefarm, so it cannot find the MCP SDK on its own.
+    // OpenCode is told through its config's `environment`; Codex has no such field, so the office sets NODE_PATH in
+    // the session's environment, which Codex and its MCP subprocesses inherit. Without it the CEO has no office tools
+    // and says so, while still answering — easy to mistake for the CEO being broken.
+    const office = { command: 'node', args: ['office-mcp.cjs', 'http://127.0.0.1:1/api/mcp/t'], nodePath: '/opt/cubefarm/node_modules' };
+    expect(launchArgs('codex', ctx({ role: 'ceo', office })).env.NODE_PATH).toBe('/opt/cubefarm/node_modules');
+    // An agent, or no office server at all: nothing added.
+    expect(launchArgs('codex', ctx({ role: 'agent', office })).env.NODE_PATH).toBeUndefined();
+    expect(launchArgs('codex', ctx({ role: 'ceo' })).env.NODE_PATH).toBeUndefined();
+  });
+
+  it('writes the Codex config that carries the office server, which -c cannot express', () => {
+    const toml = codexConfigToml({ command: 'C:\\Program Files\\nodejs\\node.exe', args: ['C:\\Users\\A B\\.cubefarm\\bin\\office-mcp.cjs', 'http://127.0.0.1:4317/api/mcp/tok'] });
+    expect(toml).toBe(
+      '[mcp_servers.office]\ncommand = "C:\\\\Program Files\\\\nodejs\\\\node.exe"\nargs = ["C:\\\\Users\\\\A B\\\\.cubefarm\\\\bin\\\\office-mcp.cjs", "http://127.0.0.1:4317/api/mcp/tok"]\n',
+    );
+    // Doubled backslashes are what a TOML basic string needs for a Windows path, so a round trip must give it back.
+    expect(toml).toContain('"C:\\\\Program Files\\\\nodejs\\\\node.exe"');
+  });
+
   it('runs the hook program with a command that never starts with a quote on Windows', () => {
     expect(codexHookCommand('C:\\Program Files\\nodejs\\node.exe', 'C:\\Users\\A B\\.cubefarm\\bin\\codex-hook.cjs', true)).toBe('node "C:\\Users\\A B\\.cubefarm\\bin\\codex-hook.cjs"');
     expect(codexHookCommand('/usr/bin/node', "/home/o'neil/.cubefarm/bin/codex-hook.cjs", false)).toBe(`'/usr/bin/node' '/home/o'"'"'neil/.cubefarm/bin/codex-hook.cjs'`);
@@ -164,8 +185,13 @@ describe('launchArgs', () => {
 
   it("gives the office's tools to the CLIs that start their own MCP servers", () => {
     const office = { command: 'C:\\Program Files\\nodejs\\node.exe', args: ['C:\\Users\\A B\\.cubefarm\\bin\\office-mcp.cjs', 'http://127.0.0.1:4317/api/mcp/tok'], nodePath: 'C:\\cubefarm\\node_modules' };
-    const codex = launchArgs('codex', ctx({ role: 'ceo', office })).args.find((a) => a.startsWith('mcp_servers.office='))!;
-    expect(codex).toBe(`mcp_servers.office={command=${JSON.stringify(office.command)},args=[${office.args.map((a) => JSON.stringify(a)).join(',')}]}`);
+    const { args, env } = launchArgs('codex', ctx({ role: 'ceo', office, codexHome: 'C:\\swarm\\sessions\\t\\codex' }));
+    // Codex cannot be given an MCP server on the command line at all: every table-shaped -c value arrives as a string
+    // and fails the bootstrap config. It reads the session's CODEX_HOME instead (codexConfigToml), which the runner
+    // writes and passes; NODE_PATH is what lets the bridge find the SDK from outside cubefarm.
+    expect(args.some((a) => a.startsWith('mcp_servers.office'))).toBe(false);
+    expect(env.CODEX_HOME).toBe('C:\\swarm\\sessions\\t\\codex');
+    expect(env.NODE_PATH).toBe('C:\\cubefarm\\node_modules');
     const opencode = JSON.parse(launchArgs('opencode', ctx({ role: 'ceo', office })).env.OPENCODE_CONFIG_CONTENT);
     // environment: the bridge is deployed outside cubefarm, so it must be told where the SDK it needs lives.
     expect(opencode.mcp.office).toEqual({ type: 'local', command: [office.command, ...office.args], enabled: true, environment: { NODE_PATH: office.nodePath } });
@@ -294,6 +320,21 @@ describe('the office MCP bridge', () => {
     expect(OFFICE_MCP_SOURCE).toContain('StdioServerTransport');
     expect(OFFICE_MCP_SOURCE).toContain('ListToolsRequestSchema');
     expect(OFFICE_MCP_SOURCE).toContain('CallToolRequestSchema');
+  });
+
+  it('carries the SDK folder in its own source, since the environment cannot be relied on', () => {
+    // The bridge is deployed outside cubefarm, so it cannot resolve the SDK by walking up from itself. NODE_PATH looks
+    // like the answer, but Codex spawns its MCP servers with an environment of its own: measured with a logging stand-in
+    // at the deployed path, the bridge was launched with NODE_PATH unset and died before serving anything.
+    const deployed = officeMcpSource('C:\\cubefarm\\node_modules');
+    expect(deployed).toContain(`const SDK_DIR = ${JSON.stringify('C:\\cubefarm\\node_modules')};`);
+    expect(deployed).toContain('module.paths.unshift(SDK_DIR)');
+    expect(deployed).not.toContain('__SDK_DIR__');
+    // It is still the same bridge, and still plain CommonJS a CLI can spawn.
+    expect(deployed).toContain('StreamableHTTPTransport'.replace('Transport', 'ClientTransport'));
+    expect(deployed).not.toMatch(/^\s*(import|export)\s/m);
+    // The URL still comes from the argument, so one deployed file serves every session.
+    expect(deployed).toContain('process.argv[2]');
   });
 
   it('resolves the SDK parts it requires, so the bridge starts where the office runs', () => {
