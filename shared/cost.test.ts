@@ -67,7 +67,28 @@ describe('rates', () => {
     expect(rateFor('gpt-5.6-sol', { 'gpt-5.6-sol': { input: 1, output: 2, source: 'manager', verifiedAt: '2026-10-11' } })?.output).toBe(2);
     // a partial override of a known rate keeps the other prices
     const sonnet = rateFor('claude-sonnet', { 'claude-sonnet': { output: 16 } });
-    expect(sonnet).toMatchObject({ input: 3, output: 16 });
+    expect(sonnet).toMatchObject({ input: 2, output: 16 });
+  });
+
+  it('matches the official Claude rates at the cited page (current models, not retired ones)', () => {
+    expect(rateFor('claude-fable')).toMatchObject({ input: 10, cacheWrite: 12.5, cacheRead: 0.25, output: 50, currency: 'USD' });
+    expect(rateFor('claude-opus')).toMatchObject({ input: 4, cacheWrite: 5, cacheRead: 0.2, output: 20, currency: 'USD' });
+    expect(rateFor('claude-sonnet')).toMatchObject({ input: 2, cacheWrite: 2.5, cacheRead: 0.2, output: 10, currency: 'USD' });
+    expect(rateFor('claude-haiku')).toMatchObject({ input: 0.1, cacheWrite: 0.125, cacheRead: 0.01, output: 0.5, currency: 'USD' });
+  });
+
+  it('matches the official DeepSeek peak rates (off-peak is half)', () => {
+    expect(rateFor('deepseek-flash')).toMatchObject({ input: 0.3, cacheWrite: 0.3, cacheRead: 0.006, output: 1.2, offPeakMultiplier: 0.5, currency: 'USD' });
+    expect(rateFor('deepseek-v4-pro')).toMatchObject({ input: 1.32, cacheWrite: 1.32, cacheRead: 0.044, output: 3.96, offPeakMultiplier: 0.5, currency: 'USD' });
+  });
+
+  it('estimates a Claude Fable session from its verified rate instead of calling it unavailable', () => {
+    expect(modelKey('claude-fable-5-1')).toBe('claude-fable');
+    const e = estimateTokensUsd({ uncachedInput: 1_000_000, cachedInput: 0, cacheWriteInput: 0, output: 500_000, reasoning: null, reasoningIncludedInOutput: true }, rateFor('claude-fable')!, null)!;
+    expect(e.usd).toBeCloseTo(10 + 25, 4); // 1M input + 0.5M output
+    const r = resolveUsage(rec({ model: 'claude-fable', modelRaw: 'claude-fable-5-1', provider: 'claude', reportedUsd: null }));
+    expect(r.kind).toBe('estimated');
+    expect(r.usd).toBeGreaterThan(0);
   });
 });
 
@@ -75,16 +96,16 @@ describe('token arithmetic', () => {
   it('prices uncached input, cache read and write, and output separately', () => {
     const rate = rateFor('claude-opus')!;
     const e = estimateTokensUsd({ uncachedInput: 1_000_000, cachedInput: 2_000_000, cacheWriteInput: 1_000_000, output: 1_000_000, reasoning: null, reasoningIncludedInOutput: true }, rate, BASE.at)!;
-    // 15 + 2*1.5 + 18.75 + 75
-    expect(e.usd).toBeCloseTo(15 + 3 + 18.75 + 75, 4);
+    // 4 + 2*0.20 + 5 + 20
+    expect(e.usd).toBeCloseTo(4 + 0.4 + 5 + 20, 4);
   });
 
   it('does not count reasoning twice when the provider already folded it into output', () => {
-    const rate = rateFor('deepseek-flash')!;
+    const rate = rateFor('claude-opus')!;
     const included = estimateTokensUsd({ uncachedInput: 0, cachedInput: 0, cacheWriteInput: 0, output: 1_000_000, reasoning: 500_000, reasoningIncludedInOutput: true }, rate, BASE.at)!;
     const separate = estimateTokensUsd({ uncachedInput: 0, cachedInput: 0, cacheWriteInput: 0, output: 1_000_000, reasoning: 500_000, reasoningIncludedInOutput: false }, rate, BASE.at)!;
-    expect(included.usd).toBeCloseTo(1.1, 4);
-    expect(separate.usd).toBeCloseTo(1.1 + 0.55, 4); // 0.5M at the output rate
+    expect(included.usd).toBeCloseTo(20, 4);
+    expect(separate.usd).toBeCloseTo(20 + 10, 4); // 0.5M reasoning at the output rate
   });
 
   it('counts reasoning in the token total only when it is not already in output', () => {
@@ -94,22 +115,32 @@ describe('token arithmetic', () => {
 });
 
 describe('deepseek time tiers', () => {
-  it('halves the price in the off-peak window and charges full at peak', () => {
+  const usage = { uncachedInput: 1_000_000, cachedInput: 0, cacheWriteInput: 0, output: 0, reasoning: null, reasoningIncludedInOutput: true };
+
+  it('charges full price in the weekday peak windows and half at every other hour', () => {
     const rate = rateFor('deepseek-flash')!;
-    const peak = new Date(Date.UTC(2026, 9, 11, 10, 0));
-    const off = new Date(Date.UTC(2026, 9, 11, 18, 0));
-    const usage = { uncachedInput: 1_000_000, cachedInput: 0, cacheWriteInput: 0, output: 0, reasoning: null, reasoningIncludedInOutput: true };
-    expect(estimateTokensUsd(usage, rate, peak.getTime())!.usd).toBeCloseTo(0.27, 4);
-    expect(estimateTokensUsd(usage, rate, off.getTime())!.usd).toBeCloseTo(0.135, 4);
-    expect(tierFor(rate, off.getTime()).label).toBe('off-peak');
+    const mondayPeak = Date.UTC(2026, 9, 12, 2, 0); // Monday 02:00 UTC
+    const mondayOff = Date.UTC(2026, 9, 12, 18, 0); // Monday 18:00 UTC
+    expect(estimateTokensUsd(usage, rate, mondayPeak)!.usd).toBeCloseTo(0.3, 4);
+    expect(estimateTokensUsd(usage, rate, mondayOff)!.usd).toBeCloseTo(0.15, 4);
+    expect(tierFor(rate, mondayPeak).label).toBe('peak');
+    expect(tierFor(rate, mondayOff).label).toBe('off-peak');
+  });
+
+  it('prices weekends and Chinese public holidays off-peak even inside a peak window', () => {
+    const rate = rateFor('deepseek-flash')!;
+    const saturdayPeak = Date.UTC(2026, 9, 10, 2, 0); // Saturday 02:00 UTC
+    const holidayPeak = Date.UTC(2026, 9, 1, 2, 0); // National Day, a Thursday, 02:00 UTC
+    expect(tierFor(rate, saturdayPeak)).toMatchObject({ multiplier: 0.5, label: 'off-peak' });
+    expect(estimateTokensUsd(usage, rate, holidayPeak)!.usd).toBeCloseTo(0.15, 4);
   });
 
   it('assumes peak, and exposes a range, when the time is unknown', () => {
     const rate = rateFor('deepseek-flash')!;
     expect(tierFor(rate, null)).toMatchObject({ multiplier: 1, label: 'peak (time unknown)' });
-    const r = resolveUsage(rec({ provider: 'deepseek', model: 'deepseek-flash', at: null, usage: { uncachedInput: 1_000_000, cachedInput: 0, cacheWriteInput: 0, output: 0, reasoning: null, reasoningIncludedInOutput: true } }));
+    const r = resolveUsage(rec({ provider: 'deepseek', model: 'deepseek-flash', at: null, usage }));
     expect(r.kind).toBe('estimated');
-    expect(r.range).toEqual([0.135, 0.27]);
+    expect(r.range).toEqual([0.15, 0.3]);
   });
 });
 
@@ -161,9 +192,9 @@ describe('roll-ups', () => {
       resolveUsage(rec({ key: 'b' })),
       resolveUsage(rec({ key: 'c', usage: { uncachedInput: null, cachedInput: null, cacheWriteInput: null, output: null, reasoning: null, reasoningIncludedInOutput: true } })),
     ]);
-    expect(r).toMatchObject({ reportedUsd: 2, estimatedUsd: 15, records: 3, unavailable: 1, partial: true });
+    expect(r).toMatchObject({ reportedUsd: 2, estimatedUsd: 4, records: 3, unavailable: 1, partial: true });
     expect(r.coverage).toBeCloseTo(2 / 3);
-    expect(r.totalUsd).toBeCloseTo(17);
+    expect(r.totalUsd).toBeCloseTo(6);
   });
 });
 

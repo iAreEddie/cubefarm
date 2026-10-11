@@ -48,8 +48,15 @@ export interface RateEntry {
   cacheWrite: number; // cache creation/write
   output: number; // output (reasoning included unless reasoningRate is set)
   reasoningRate?: number; // only when billed apart from output
-  /** Time-of-day discounts, e.g. DeepSeek off-peak. Local-to-UTC hours, half-open [from, to), may wrap midnight. */
-  tiers?: { fromHourUtc: number; toHourUtc: number; multiplier: number; label: string }[];
+  /**
+   * Priced windows by time of day (UTC), e.g. DeepSeek's peak hours. Half-open [fromHourUtc, toHourUtc), may wrap
+   * midnight; `weekdaysOnly` skips Saturday and Sunday. When no window matches, `offPeakMultiplier` applies.
+   */
+  tiers?: { fromHourUtc: number; toHourUtc: number; multiplier: number; label: string; weekdaysOnly?: boolean }[];
+  /** Multiplier outside every tier window (DeepSeek's off-peak half price). Default 1: no discount. */
+  offPeakMultiplier?: number;
+  /** Dates (UTC 'YYYY-MM-DD') priced off-peak regardless of the tiers, e.g. Chinese public holidays. */
+  holidays?: string[];
   source: string; // where the rate was verified
   verifiedAt: string; // ISO date the rate was checked
   note?: string;
@@ -107,6 +114,8 @@ const OPENAI_ALIASES: [RegExp, string][] = [
 ];
 const DEEPSEEK_ALIASES: [RegExp, string][] = [
   [/deepseek[-_.\s]?flash/i, 'deepseek-flash'],
+  [/deepseek[-_.\s]?v4[-_.\s]?flash/i, 'deepseek-flash'],
+  [/deepseek[-_.\s]?v4[-_.\s]?pro/i, 'deepseek-v4-pro'],
   [/deepseek[-_.\s]?reasoner/i, 'deepseek-reasoner'],
   [/deepseek[-_.\s]?chat/i, 'deepseek-chat'],
 ];
@@ -137,6 +146,20 @@ export function modelKey(raw: string): string {
 // ---------- verified rates ----------
 
 /**
+ * Chinese public holidays the office prices off-peak (UTC dates), from the State Council's 2026 notice. Lunar-calendar
+ * feasts move each year; a later year's list is a manager override (`RateOverrides`) until it is verified here.
+ */
+const CN_HOLIDAYS_2026 = [
+  '2026-01-01', '2026-01-02', '2026-01-03',
+  '2026-02-15', '2026-02-16', '2026-02-17', '2026-02-18', '2026-02-19', '2026-02-20', '2026-02-21', '2026-02-22',
+  '2026-04-04', '2026-04-05', '2026-04-06',
+  '2026-05-01', '2026-05-02', '2026-05-03', '2026-05-04', '2026-05-05',
+  '2026-06-19', '2026-06-20', '2026-06-21',
+  '2026-09-25', '2026-09-26', '2026-09-27',
+  '2026-10-01', '2026-10-02', '2026-10-03', '2026-10-04', '2026-10-05', '2026-10-06', '2026-10-07',
+];
+
+/**
  * Rates verified at implementation time. Claude is the CLI/provider; the model is one of its families. Codex's Sol
  * models have no published rate the office could verify, so they carry none: a manager override supplies one, else
  * the cost shows as unavailable rather than guessed from a similarly named model.
@@ -144,77 +167,91 @@ export function modelKey(raw: string): string {
 export const RATES: RateEntry[] = [
   {
     provider: 'claude',
-    model: 'claude-opus',
+    model: 'claude-fable',
     currency: 'USD',
-    input: 15,
-    cacheRead: 1.5,
-    cacheWrite: 18.75,
-    output: 75,
+    input: 10,
+    cacheRead: 0.25,
+    cacheWrite: 12.5, // the 5-minute cache write; the 1-hour write is $20
+    output: 50,
     source: 'https://platform.claude.com/docs/en/about-claude/pricing',
     verifiedAt: '2026-10-11',
     subscription: true,
-    note: 'API-equivalent value of a Claude Code subscription session; not an extra charge per session.',
+    note: 'Claude Fable 5.1 (5-minute cache write; cache hits are 0.025x input). API-equivalent value of a Claude Code subscription session; not an extra charge per session.',
+  },
+  {
+    provider: 'claude',
+    model: 'claude-opus',
+    currency: 'USD',
+    input: 4,
+    cacheRead: 0.2,
+    cacheWrite: 5, // the 5-minute cache write; the 1-hour write is $8
+    output: 20,
+    source: 'https://platform.claude.com/docs/en/about-claude/pricing',
+    verifiedAt: '2026-10-11',
+    subscription: true,
+    note: 'Claude Opus 5.5, not the retired Opus 4/4.1 (5-minute cache write). API-equivalent value of a Claude Code subscription session; not an extra charge per session.',
   },
   {
     provider: 'claude',
     model: 'claude-sonnet',
     currency: 'USD',
-    input: 3,
-    cacheRead: 0.3,
-    cacheWrite: 3.75,
-    output: 15,
+    input: 2,
+    cacheRead: 0.2,
+    cacheWrite: 2.5, // the 5-minute cache write; the 1-hour write is $4
+    output: 10,
     source: 'https://platform.claude.com/docs/en/about-claude/pricing',
     verifiedAt: '2026-10-11',
     subscription: true,
+    note: 'Claude Sonnet 5, not the retired Sonnet 4.x (5-minute cache write). API-equivalent value of a Claude Code subscription session; not an extra charge per session.',
   },
   {
     provider: 'claude',
     model: 'claude-haiku',
     currency: 'USD',
-    input: 1,
-    cacheRead: 0.1,
-    cacheWrite: 1.25,
-    output: 5,
+    input: 0.1,
+    cacheRead: 0.01,
+    cacheWrite: 0.125, // the 5-minute cache write; the 1-hour write is $0.20
+    output: 0.5,
     source: 'https://platform.claude.com/docs/en/about-claude/pricing',
     verifiedAt: '2026-10-11',
     subscription: true,
+    note: 'Claude Haiku 5.5, prompts up to 100,000 tokens (5-minute cache write). API-equivalent value of a Claude Code subscription session; not an extra charge per session.',
   },
   {
     provider: 'deepseek',
     model: 'deepseek-flash',
     currency: 'USD',
-    input: 0.27,
-    cacheRead: 0.07,
-    cacheWrite: 0.27, // DeepSeek has no separate cache-write price: a write is a cache miss
-    output: 1.1,
+    input: 0.3,
+    cacheRead: 0.006,
+    cacheWrite: 0.3, // DeepSeek has no separate cache-write price: a write is a cache miss
+    output: 1.2,
     source: 'https://api-docs.deepseek.com/quick_start/pricing/',
     verifiedAt: '2026-10-11',
-    note: 'deepseek-chat/DeepSeek V3 list price; off-peak 16:30–00:30 UTC is half price.',
-    tiers: [{ fromHourUtc: 16.5, toHourUtc: 24.5, multiplier: 0.5, label: 'off-peak' }],
+    note: 'deepseek-flash (DeepSeek-V4.1-Flash) peak price; off-peak is half. Legacy names deepseek-v4-flash and deepseek-v4-flash-vision-exp bill at this rate. Peak 01:00-04:00 and 06:00-10:00 UTC Mon-Fri, excluding Chinese public holidays.',
+    tiers: [
+      { fromHourUtc: 1, toHourUtc: 4, multiplier: 1, label: 'peak', weekdaysOnly: true },
+      { fromHourUtc: 6, toHourUtc: 10, multiplier: 1, label: 'peak', weekdaysOnly: true },
+    ],
+    offPeakMultiplier: 0.5,
+    holidays: CN_HOLIDAYS_2026,
   },
   {
     provider: 'deepseek',
-    model: 'deepseek-chat',
+    model: 'deepseek-v4-pro',
     currency: 'USD',
-    input: 0.27,
-    cacheRead: 0.07,
-    cacheWrite: 0.27,
-    output: 1.1,
+    input: 1.32,
+    cacheRead: 0.044,
+    cacheWrite: 1.32,
+    output: 3.96,
     source: 'https://api-docs.deepseek.com/quick_start/pricing/',
     verifiedAt: '2026-10-11',
-    tiers: [{ fromHourUtc: 16.5, toHourUtc: 24.5, multiplier: 0.5, label: 'off-peak' }],
-  },
-  {
-    provider: 'deepseek',
-    model: 'deepseek-reasoner',
-    currency: 'USD',
-    input: 0.55,
-    cacheRead: 0.14,
-    cacheWrite: 0.55,
-    output: 2.19,
-    source: 'https://api-docs.deepseek.com/quick_start/pricing/',
-    verifiedAt: '2026-10-11',
-    tiers: [{ fromHourUtc: 16.5, toHourUtc: 24.5, multiplier: 0.5, label: 'off-peak' }],
+    note: 'deepseek-v4-pro (DeepSeek-V4-Pro-0813) peak price; off-peak is half. Peak 01:00-04:00 and 06:00-10:00 UTC Mon-Fri, excluding Chinese public holidays.',
+    tiers: [
+      { fromHourUtc: 1, toHourUtc: 4, multiplier: 1, label: 'peak', weekdaysOnly: true },
+      { fromHourUtc: 6, toHourUtc: 10, multiplier: 1, label: 'peak', weekdaysOnly: true },
+    ],
+    offPeakMultiplier: 0.5,
+    holidays: CN_HOLIDAYS_2026,
   },
 ];
 
@@ -248,16 +285,23 @@ export function rateFor(model: string, overrides: RateOverrides = {}): RateEntry
 
 // ---------- the arithmetic ----------
 
-/** The multiplier for the time of day (UTC), or null when tiers exist but the hour is unknown. */
+/** The multiplier and label for a record's time (UTC): a tier window, off-peak, or the peak when the hour is unknown. */
 export function tierFor(rate: RateEntry, at: number | null): { multiplier: number; label: string } {
   if (!rate.tiers?.length) return { multiplier: 1, label: 'standard' };
-  if (at === null) return { multiplier: Math.max(1, ...rate.tiers.map((t) => t.multiplier)), label: 'peak (time unknown)' };
-  const hour = new Date(at).getUTCHours() + new Date(at).getUTCMinutes() / 60;
+  const peak = Math.max(...rate.tiers.map((t) => t.multiplier));
+  const off = rate.offPeakMultiplier ?? 1;
+  if (at === null) return { multiplier: peak, label: 'peak (time unknown)' };
+  const d = new Date(at);
+  const hour = d.getUTCHours() + d.getUTCMinutes() / 60;
+  const day = d.getUTCDay(); // 0 Sunday … 6 Saturday
+  const date = d.toISOString().slice(0, 10);
+  if (rate.holidays?.includes(date)) return { multiplier: off, label: 'off-peak (holiday)' };
   for (const t of rate.tiers) {
+    if (t.weekdaysOnly && (day === 0 || day === 6)) continue;
     const inTier = t.fromHourUtc <= t.toHourUtc ? hour >= t.fromHourUtc && hour < t.toHourUtc : hour >= t.fromHourUtc || hour < t.toHourUtc;
     if (inTier) return { multiplier: t.multiplier, label: t.label };
   }
-  return { multiplier: 1, label: 'standard' };
+  return { multiplier: off, label: 'off-peak' };
 }
 
 /** All token categories are missing: there's nothing to price. */
@@ -298,8 +342,10 @@ export function resolveUsage(record: UsageRecord, overrides: RateOverrides = {})
     if (e) {
       const resolved: ResolvedUsage = { ...record, kind: 'estimated', usd: round4(e.usd), rate, tier: e.tier };
       if (record.at === null && rate.tiers?.length) {
-        const mults = [1, ...rate.tiers.map((t) => t.multiplier)]; // 1 is the untiered standard rate
-        resolved.range = [round4(e.usd * (Math.min(...mults) / Math.max(...mults))), round4(e.usd)];
+        // The peak applied: expose [off-peak, peak] so an unknown-time estimate is honest about the spread.
+        const peak = Math.max(...rate.tiers.map((t) => t.multiplier));
+        const off = Math.min(peak, rate.offPeakMultiplier ?? 1);
+        resolved.range = [round4(e.usd * (off / peak)), round4(e.usd)];
       }
       return resolved;
     }

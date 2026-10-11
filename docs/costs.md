@@ -21,8 +21,10 @@ and reasoning is added only when a provider reports it outside output. Each reco
 - **Reported** — the provider's own figure, labelled as a usage value (for a subscription it is the API-equivalent
   value, not an extra charge).
 - **Estimated** — no reported cost, but measured tokens and a *verified* rate: `shared/cost.ts` pins each rate to a
-  currency, a source URL and the date it was checked, so a later rate change never rewrites history. DeepSeek's
-  off-peak window is applied when the record's time is known; otherwise the peak rate is assumed and a range is shown.
+  currency, a source URL and the date it was checked, so a later rate change never rewrites history. DeepSeek's peak
+  windows (01:00-04:00 and 06:00-10:00 UTC, Monday to Friday, Chinese public holidays excepted) are applied when the
+  record's time is known; every other hour is off-peak at half price. Without a time the peak rate is assumed and a
+  range is shown.
 - **Free** — a provider that said, in effect, that the call cost nothing (for example a local model with no tokens).
 - **Unavailable** — no tokens or no rate. This is never a zero: a session the office cannot measure does not look free.
   OpenCode's `cost: 0` for a model it has no rate for is treated as a placeholder, not as free.
@@ -34,14 +36,16 @@ similarly named model's rate. A manager can supply a rate for a custom or unpubl
 ## Where it shows
 
 Mission control's cost screen and the manager's console → **Mission control** show the office's last-24-hour total
-with its provenance, each floor's, and, by model, tokens/hour and dollars/hour. The hourly figures divide by the
+with its provenance, each floor's, and, by model, tokens/hour and dollars/hour. The headline total is the same
+24-hour window as the by-model rows under it, so it has no older records folded in. The hourly figures divide by the
 elapsed wall-clock hours of the window (idle hours included) and say when the office's history starts inside it.
 
 ## Deduplication
 
-Usage is deduplicated by session and message. A cumulative session report replaces the previous one, so a resumed
-session's lifetime total is never added again, and a message seen again (streaming, or a replayed turn) keeps only its
-fuller report.
+Usage is deduplicated by session and message, at the office level too: a resumed or restarted session that re-reads
+its transcript replaces its previous records rather than appending them, so a lifetime total is never added again.
+A cumulative session report replaces the previous one, and a message seen again (streaming, or a replayed turn) keeps
+only its fuller report.
 
 ## Budgets
 

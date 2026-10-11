@@ -25,8 +25,10 @@ describe('Claude Code transcript', () => {
     expect(s.kind).toBe('estimated');
     expect(s.records).toHaveLength(2); // the duplicate message ids collapse
     expect(s.reportedUsd).toBe(0);
-    // opus: (100*15 + 2000*1.5 + 1000*18.75 + 500*75)/1e6 = (1500 + 3000 + 18750 + 37500)/1e6
-    expect(s.estimatedUsd).toBeCloseTo((1500 + 3000 + 18750 + 37500 + (50 * 3 + 100 * 15)) / 1e6, 3);
+    // opus 5.5: (100*4 + 2000*0.20 + 1000*5 + 500*20)/1e6; sonnet 5: (50*2 + 100*10)/1e6
+    const opus = (100 * 4 + 2000 * 0.2 + 1000 * 5 + 500 * 20) / 1e6;
+    const sonnet = (50 * 2 + 100 * 10) / 1e6;
+    expect(s.estimatedUsd).toBeCloseTo(opus + sonnet, 3);
   });
 
   it('attributes a reported SDK per-model cost and drops that session\'s estimates', () => {
