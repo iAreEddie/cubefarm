@@ -1,7 +1,7 @@
 import { useStore } from './store';
 import type { PongResult } from '../../shared/pong';
 import type { AgentStyle } from '../../shared/looks';
-import type { AgentCli, AgentPromptView, AgentView, DoctorFinding, DoctorFix, EffortLevel, GhRepoSummary, NotifyChannel, NotifyChannelsView, NotifyWebhook, OfficeUpdateView, PreviewView, ProjectFolderView, PrPreviewView, RepoView, SwarmSettings, TextFileView, UsageView, VoiceCacheView, VoiceOption } from '../../shared/types';
+import type { AgentCli, AgentPromptView, AgentView, DoctorFinding, DoctorFix, EffortLevel, GhRepoSummary, NotifyChannel, NotifyChannelsView, NotifyWebhook, OfficeUpdateView, PreviewView, ProjectFolderView, PrPreviewView, RepoView, SwarmSettings, TextFileView, UpstreamView, UsageView, VoiceCacheView, VoiceOption } from '../../shared/types';
 import type { JournalChunk, JournalDayView } from '../../shared/journal';
 import type { DecorItem, ProgressView } from '../../shared/progress';
 
@@ -114,6 +114,10 @@ export const api = {
     useStore.getState().setOfficeUpdate(u);
     return u;
   },
+  /** Run the daily upstream check now, whatever the cadence says. */
+  checkUpstream: () => call<UpstreamView>('POST', '/api/upstream/check', {}),
+  /** The demo only: pick the upstream scenario (current / ahead / updates / diverged / failed) and check. */
+  demoUpstream: (scenario: 'current' | 'ahead' | 'updates' | 'diverged' | 'failed') => call<UpstreamView>('POST', '/api/upstream/demo', { scenario }),
   /** Clears pacing after a usage warning; refused (and toasted) while paused at the limit. */
   resumeFullSpeed: () => call<UsageView>('POST', '/api/usage/resume'),
   /** The demo only: a usage warning, or the limit, as if a session had reported it. */

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { CEO_ID, DEFAULT_DOG_NAME, DEFAULT_MAX_AGENTS, type AgentView, type CeoInfo, type CliView, type DoctorFinding, type HireRequestView, type LogLine, type NotifyChannelsView, type OfficeUpdateView, type OpsView, type PhoneMessage, type PongRow, type PrPreviewView, type QaView, type RepoView, type ServerEvent, type SwarmSettings, type TickerItem, type UsageView, type VisitorView, type VoiceCacheView, type WorldSnapshot } from '../../shared/types';
+import { CEO_ID, DEFAULT_DOG_NAME, DEFAULT_MAX_AGENTS, type AgentView, type CeoInfo, type CliView, type DoctorFinding, type HireRequestView, type LogLine, type NotifyChannelsView, type OfficeUpdateView, type OpsView, type PhoneMessage, type PongRow, type PrPreviewView, type QaView, type RepoView, type ServerEvent, type SwarmSettings, type TickerItem, type UpstreamView, type UsageView, type VisitorView, type VoiceCacheView, type WorldSnapshot } from '../../shared/types';
 import { blockers } from '../../shared/issues';
 import { latestListed } from '../../shared/watch';
 import { DEFAULT_WEATHER, DEFAULT_WORLD_EVENTS, EMPTY_WEATHER_VIEW, type WeatherView } from '../../shared/outside';
@@ -20,6 +20,24 @@ import { ROOF } from './world/layout';
 import { emitReward } from './world/decor/rewards';
 
 export type Agent = Omit<AgentView, 'log'>;
+
+/** Until the server's snapshot arrives: the office tracks the original cubefarm, not checked yet. */
+const EMPTY_UPSTREAM: UpstreamView = {
+  enabled: true,
+  repo: 'leonvanzyl/cubefarm',
+  branch: '',
+  resolvedBranch: null,
+  state: 'unknown',
+  missing: 0,
+  ahead: 0,
+  upstreamHead: null,
+  forkHead: null,
+  compareUrl: null,
+  summary: [],
+  lastAttemptAt: null,
+  lastCheckAt: null,
+  detail: null,
+};
 
 export type PhoneTab = 'chat' | 'hires' | 'company' | 'games';
 
@@ -116,6 +134,7 @@ interface State {
   version?: string; // the cubefarm version the server runs
   officeCommit?: string | null; // undefined: the server can't update itself
   officeUpdate?: OfficeUpdateView;
+  upstream: UpstreamView; // the daily check of the original project this fork tracks (#14)
   usage: UsageView; // Claude's subscription usage: normal, pacing after a warning, or paused at the limit
   ops: OpsView; // mission control: every floor's numbers and what needs the manager
   doctor: DoctorFinding[]; // the office doctor's findings (server/watchdog.ts)
@@ -228,6 +247,7 @@ export const useStore = create<State>((set, get) => ({
     worldEvents: DEFAULT_WORLD_EVENTS,
     listen: { provider: 'off', autoSend: false, handsFree: false },
     notify: DEFAULT_NOTIFY,
+    upstream: { enabled: true, repo: 'leonvanzyl/cubefarm', branch: '' },
   },
   clis: [],
   repos: [],
@@ -253,6 +273,7 @@ export const useStore = create<State>((set, get) => ({
   weather: EMPTY_WEATHER_VIEW,
   ticker: [],
   notifyChannels: { webhooks: { ntfy: { set: false, hint: '' } }, pushDevices: 0 },
+  upstream: EMPTY_UPSTREAM,
   pong: {},
   restarting: false,
   visitors: [],
@@ -312,6 +333,7 @@ export const useStore = create<State>((set, get) => ({
           version: d.version,
           officeCommit: d.officeCommit,
           officeUpdate: d.officeUpdate,
+          upstream: d.upstream ?? get().upstream,
           usage: d.usage,
           ops: d.ops ?? EMPTY_OPS,
           doctor: d.doctor ?? [],
@@ -480,6 +502,9 @@ export const useStore = create<State>((set, get) => ({
         break;
       case 'officeUpdate':
         set({ officeUpdate: ev.officeUpdate });
+        break;
+      case 'upstream':
+        set({ upstream: ev.upstream });
         break;
       case 'usage':
         set({ usage: ev.usage });

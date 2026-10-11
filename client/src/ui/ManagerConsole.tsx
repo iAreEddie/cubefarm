@@ -3,11 +3,12 @@ import { TeamStats } from './CareerCard';
 import { api } from '../api';
 import { PreviewPill, PreviewSettings } from './AppViewer';
 import { agentsOnRepo, pendingRequests, useStore, type ManagerTab } from '../store';
-import { CEO_ID, DEFAULT_MAX_AGENTS, FLOOR_SEATS, type AgentCli, type EffortLevel, type OfficeUpdateView, type RepoView } from '../../../shared/types';
+import { CEO_ID, DEFAULT_MAX_AGENTS, FLOOR_SEATS, type AgentCli, type EffortLevel, type OfficeUpdateView, type RepoView, type UpstreamView } from '../../../shared/types';
 import { CLAUDE_MODELS, modelSuggestions } from '../../../shared/models';
 import { SDK_CLI } from '../../../shared/cli';
 import { CliOptions, CliSelect, cliName, EFFORTS, EffortSelect, LookEditor, LookSelect, ModelInput, NameInput, PromptPreview } from './AgentSettings';
 import { canPostpone, canUpdateNow, drainDeadline, officeUpdateText } from '../officeUpdate';
+import { upstreamSince, upstreamStatusText } from '../upstream';
 import { confirmDialog } from './Confirm';
 import { IssueForm } from './KanbanView';
 import { LiveTerminal } from './LiveTerminal';
@@ -92,9 +93,110 @@ function OfficeRow({ update }: { update: OfficeUpdateView }) {
   );
 }
 
-/** A floor's budget (#7): the manager's cap on what its agents report spending, and the 80%/100% state. */
-function BudgetRow({ repo }: { repo: RepoView }) {
+/**
+ * The office's upstream (#14): the original project this fork tracks, checked at most once a day. The manager can
+ * point it at another repo/branch, switch it off, check now, and (in the demo) try the scenarios.
+ */
+function UpstreamRow({ upstream }: { upstream: UpstreamView }) {
   const demo = useStore((s) => s.demo);
+  const [repo, setRepo] = useState(upstream.repo);
+  const [branch, setBranch] = useState(upstream.branch);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => setRepo(upstream.repo), [upstream.repo]);
+  useEffect(() => setBranch(upstream.branch), [upstream.branch]);
+  const save = (patch: Partial<UpstreamView>) => void attempt(() => api.updateSettings({ upstream: { enabled: patch.enabled ?? upstream.enabled, repo: patch.repo ?? repo, branch: patch.branch ?? branch } }));
+  const checkNow = () => {
+    setBusy(true);
+    void attempt(() => api.checkUpstream()).finally(() => setBusy(false));
+  };
+  const tryScenario = (scenario: 'current' | 'ahead' | 'updates' | 'diverged' | 'failed') => {
+    setBusy(true);
+    void attempt(() => api.demoUpstream(scenario)).finally(() => setBusy(false));
+  };
+  const tone = upstream.state === 'failed' ? 'office-state-bad' : upstream.state === 'current' || upstream.state === 'off' ? 'office-state-ok' : 'office-state-busy';
+  return (
+    <div className="card office-card">
+      <div className="row wrap">
+        <span className="floor-badge office-badge" aria-hidden>
+          📡
+        </span>
+        <div className="grow">
+          <b>Upstream</b> <span className="muted small">{upstream.repo}{upstream.resolvedBranch ? ` · ${upstream.resolvedBranch}` : ''}</span>
+          <div className={`small office-state ${tone}`} role="status">
+            {upstreamStatusText(upstream)}
+          </div>
+          <div className="muted small" title={upstream.compareUrl ?? undefined}>
+            Last checked {upstreamSince(upstream.lastCheckAt)}
+            {upstream.upstreamHead && upstream.forkHead ? ` · upstream ${upstream.upstreamHead} vs our ${upstream.forkHead}` : ''}
+            {upstream.compareUrl && (
+              <>
+                {' · '}
+                <a href={upstream.compareUrl} target="_blank" rel="noreferrer">
+                  Compare on GitHub ↗
+                </a>
+              </>
+            )}
+          </div>
+          {upstream.detail && <div className="muted small">{upstream.detail}</div>}
+          {upstream.summary.length > 0 && upstream.state !== 'current' && (
+            <ul className="small" style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+              {upstream.summary.slice(0, 3).map((s, i) => (
+                <li key={i}>{s}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+        <button className="btn btn-small" disabled={busy} title="Run the upstream check now, whatever the daily cadence says" onClick={checkNow}>
+          Check now
+        </button>
+      </div>
+      <div className="row wrap">
+        <label className="toggle" title="Run the upstream check at most once every 24 hours while the office is running">
+          <input type="checkbox" checked={upstream.enabled} onChange={(e) => save({ enabled: e.target.checked })} /> Check daily
+        </label>
+        <label className="toggle small">
+          Repository{' '}
+          <input
+            type="text"
+            value={repo}
+            placeholder="owner/name"
+            aria-label="Upstream repository"
+            style={{ width: 190 }}
+            onChange={(e) => setRepo(e.target.value)}
+            onBlur={() => repo !== upstream.repo && save({ repo })}
+            onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+          />
+        </label>
+        <label className="toggle small" title="Leave blank to follow the upstream's own default branch">
+          Branch{' '}
+          <input
+            type="text"
+            value={branch}
+            placeholder="default"
+            aria-label="Upstream branch"
+            style={{ width: 120 }}
+            onChange={(e) => setBranch(e.target.value)}
+            onBlur={() => branch !== upstream.branch && save({ branch })}
+            onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+          />
+        </label>
+        {demo && (
+          <>
+            <span className="muted small">Demo:</span>
+            {(['current', 'updates', 'diverged', 'failed'] as const).map((s) => (
+              <button key={s} className="btn btn-small btn-ghost" disabled={busy} onClick={() => tryScenario(s)}>
+                {s}
+              </button>
+            ))}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** A floor's budget (#7): the manager's cap on what its agents report spending, and the 80%/100% state. */
+function BudgetRow({ repo }: { repo: RepoView }) {  const demo = useStore((s) => s.demo);
   const [value, setValue] = useState(repo.budget.budgetUsd > 0 ? String(repo.budget.budgetUsd) : '');
   useEffect(() => setValue(repo.budget.budgetUsd > 0 ? String(repo.budget.budgetUsd) : ''), [repo.budget.budgetUsd]);
   const save = () => {
@@ -239,10 +341,12 @@ function FloorRow({ repo, all }: { repo: RepoView; all: RepoView[] }) {
 function FloorsTab() {
   const repos = useStore((s) => s.repos);
   const officeUpdate = useStore((s) => s.officeUpdate);
+  const upstream = useStore((s) => s.upstream);
   return (
     <div className="tab-grid">
       <div>
         {officeUpdate && <OfficeRow update={officeUpdate} />}
+        {upstream && <UpstreamRow upstream={upstream} />}
         <h3 className="section">🏢 Floors</h3>
         {repos.length === 0 && <p className="muted">No floors yet. Add a project →</p>}
         {[...repos].sort((a, b) => a.floor - b.floor).map((r) => (

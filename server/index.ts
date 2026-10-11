@@ -245,6 +245,9 @@ app.post('/api/notify/push/devices', route((req) => swarm.notifier.subscribe(req
 app.delete('/api/notify/push/devices', route((req) => swarm.notifier.unsubscribe(str(req.body?.endpoint))));
 // The office's own update: Update now / Later
 app.post('/api/office/update', route((req) => swarm.updateOffice(req.body?.action)));
+// Upstream drift (#14): Check now at once; in the demo, pick a scenario then check
+app.post('/api/upstream/check', route(() => swarm.checkUpstream()));
+app.post('/api/upstream/demo', route((req) => swarm.demoUpstream(req.body?.scenario)));
 // Claude's usage: resume full speed after a usage warning; in the demo, a warning or the limit on demand
 app.post('/api/usage/resume', route(() => swarm.resumeFullSpeed()));
 app.post('/api/usage/simulate', route((req) => swarm.simulateUsage(req.body?.kind)));

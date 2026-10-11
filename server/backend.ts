@@ -9,6 +9,7 @@ import { detectClis } from './clis.ts';
 import { installDesk, type DepsCallbacks, type DepsOutcome } from './deps.ts';
 import { realPreviews, type PreviewBackend } from './previewRunner.ts';
 import { realOffice, type OfficeHost } from './officeUpdate.ts';
+import { realUpstream, type UpstreamHost } from './upstream.ts';
 import { elevenLabs } from './elevenlabs.ts';
 import { httpTransport, type NotifyTransport } from './notifier.ts';
 import { HttpError } from './httpError.ts';
@@ -96,6 +97,8 @@ export interface Backend {
   previews: PreviewBackend;
   /** The running office's own folder and its launcher, for the office's self-update. */
   office: OfficeHost;
+  /** The original project this fork tracks, for the daily upstream check (#14). */
+  upstream: UpstreamHost;
   /** Text to speech for the manager's phone (ElevenLabs). */
   voice: VoiceApi;
   /** The real local weather for Settings → Weather (Open-Meteo, keyless; only coordinates are sent once a city is found). */
@@ -112,6 +115,8 @@ export interface Backend {
   simulateUsage?(kind: 'warning' | 'limit', now: number): UsageWarning | { limitResetsAt: number };
   /** The demo only: the office doctor's scenarios (a restart with desks gone and work finished, a stuck session). */
   demoDoctor?: DemoDoctor;
+  /** The demo only: pick the daily upstream check's scenario (#14). */
+  demoUpstream?(scenario: string): boolean;
 }
 
 /** The demo's fakes for trying the office doctor (#262). */
@@ -173,6 +178,7 @@ export const realBackend: Backend = {
   detectClis,
   previews: realPreviews,
   office: realOffice,
+  upstream: realUpstream,
   voice: elevenLabs,
   weather: openMeteo,
   notify: httpTransport,
