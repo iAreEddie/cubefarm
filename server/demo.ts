@@ -4,8 +4,10 @@ import http from 'node:http';
 import path from 'node:path';
 import type { Backend } from './backend.ts';
 import type { PreviewBackend } from './previewRunner.ts';
-import { describeOfficeTool, type LogEntry, type SessionCallbacks, type SessionHandle, type SessionOptions } from './agentRunner.ts';
+import { describeOfficeTool, type LogEntry, type SessionCallbacks, type SessionHandle, type SessionOptions, type SessionResult } from './agentRunner.ts';
 import { CLIS } from './clis.ts';
+import { modelKey, providerFor, type UsageRecord } from '../shared/cost.ts';
+import { summariseSession } from './telemetry.ts';
 import { FLOOR_SEATS, type GhRepoSummary, type IssueInfo, type PullInfo } from '../shared/types.ts';
 import type { LocalFolder } from './workspace.ts';
 import { HOME_DIR, type DemoScale } from './config.ts';
@@ -328,7 +330,7 @@ function fakeSession(opts: SessionOptions, cb: SessionCallbacks, fullName: strin
   const script = [header, ...body];
 
   const finish = () => {
-    const costUsd = 0.3 + Math.random();
+    const cost = demoSessionCost(opts.cli, opts.model);
     const turns = 15 + Math.floor(Math.random() * 20);
     cb.tool(null);
     if (kind === 'qa') {
@@ -338,7 +340,7 @@ function fakeSession(opts: SessionOptions, cb: SessionCallbacks, fullName: strin
       cb.finished({
         ok: true,
         text: '',
-        costUsd,
+        ...cost,
         turns,
         errors: [],
         structured: {
@@ -377,7 +379,7 @@ function fakeSession(opts: SessionOptions, cb: SessionCallbacks, fullName: strin
           ? 'NO CHANGE NEEDED: main already makes the toolbar wrap, so the PR is right as it is.'
           : '● The toolbar wraps on narrow screens now. Ready for another QA round.';
       cb.log([{ kind: 'text', text }]);
-      cb.finished({ ok: true, text, costUsd, turns, errors: [] });
+      cb.finished({ ok: true, text, ...cost, turns, errors: [] });
       return;
     }
     const repo = repos.get(fullName);
@@ -409,7 +411,7 @@ function fakeSession(opts: SessionOptions, cb: SessionCallbacks, fullName: strin
       cb.log([{ kind: 'result', text: `  ⎿ ${url}` }]);
     }
     cb.log([{ kind: 'text', text: `● Opened ${url || 'the pull request'}. It closes #${number} and includes tests.` }]);
-    cb.finished({ ok: true, text: url, costUsd, turns, errors: [] });
+    cb.finished({ ok: true, text: url, ...cost, turns, errors: [] });
   };
 
   let i = 0;
@@ -531,12 +533,41 @@ export function demoUsage(kind: 'warning' | 'limit', now: number): UsageWarning 
   return { resetsAt: midnight.getTime(), rateLimitType: 'seven_day', utilization: 0.91 };
 }
 
+/** One made-up measured session for the demo boards: a real UsageRecord the accounting prices like any other. */
+function demoUsageRecord(repo: string, raw: string, at: number, reportedUsd: number | null, tokens: Partial<UsageRecord['usage']> = {}): UsageRecord {
+  const provider = providerFor(raw);
+  return {
+    key: `demo:${repo}:${raw}:${at}`,
+    sessionId: `demo-${repo}-${at}`,
+    scope: 'message',
+    at,
+    provider,
+    model: modelKey(raw),
+    modelRaw: raw,
+    usage: { uncachedInput: 8000, cachedInput: 20000, cacheWriteInput: 2000, output: 4000, reasoning: null, reasoningIncludedInOutput: true, ...tokens },
+    reportedUsd,
+    source: reportedUsd !== null ? 'claude-statusline' : provider === 'deepseek' ? 'opencode-session' : 'codex-rollout',
+    repo,
+  };
+}
+
+/** A demo session's cost, chosen by the CLI so the boards show reported, estimated and unavailable side by side. */
+export function demoSessionCost(cli: string | undefined, model: string): Pick<SessionResult, 'costUsd' | 'estimatedUsd' | 'costKind' | 'usage'> {
+  const id = cli ?? 'claude';
+  const raw = model || (id === 'codex' ? 'gpt-5.6-sol' : id === 'opencode' ? 'deepseek/deepseek-flash' : 'claude-opus-5-5');
+  const reportedUsd = id === 'claude' ? 0.42 : id === 'opencode' ? 0 : null;
+  const s = summariseSession([demoUsageRecord('demo', raw, Date.now(), reportedUsd)]);
+  return { costUsd: s.reportedUsd, estimatedUsd: s.reportedUsd > 0 ? 0 : s.estimatedUsd, costKind: s.kind, usage: s.records };
+}
+
 /**
  * A believable past week for mission control: each floor merged a few PRs every working day (the first floor more),
- * most QA rounds and check runs passed, and sessions cost around a dollar. `rand` is there for the tests.
+ * most QA rounds and check runs passed, and sessions cost around a dollar. Usage is seeded too, in three models, so
+ * the demo shows reported (Claude), estimated (DeepSeek) and unavailable (Sol) costs offline. `rand` is for the tests.
  */
 export function demoPastWeek(repos: string[], now: number, rand: () => number = Math.random): OpsHistory {
   const h = emptyHistory();
+  h.since = now - 7 * DAY_MS;
   const min = 60_000;
   let n = 0;
   repos.forEach((repo, floor) => {
@@ -553,14 +584,24 @@ export function demoPastWeek(repos: string[], now: number, rand: () => number = 
           h.qa.push([at - before, repo, r === rounds - 1, Math.round((1 + rand() * 14) * min)]);
           h.checks.push([at - before - 6 * min, repo, `past${String(n++).padStart(4, '0')}`, rand() > 0.12, Math.round((2.5 + rand() * 5) * min)]);
           h.cost.push([at - before, repo, Math.round((0.3 + rand()) * 100) / 100], [at - before - 40 * min, repo, Math.round((0.4 + rand() * 1.2) * 100) / 100]);
+          // Three models so the boards show reported, estimated and unavailable: Claude (reported), DeepSeek (estimated), Sol (unavailable).
+          h.usage.push(
+            demoUsageRecord(repo, 'claude-opus-5-5', at - before, Math.round((0.3 + rand()) * 100) / 100),
+            demoUsageRecord(repo, 'deepseek/deepseek-flash', at - before - 40 * min, 0),
+            demoUsageRecord(repo, 'gpt-5.6-sol', at - before - 20 * min, null),
+          );
         }
       }
-      for (const hour of [10, 15]) h.cost.push([midnight + hour * HOUR_MS, '', Math.round((0.5 + rand() * 0.8) * 100) / 100]); // the CEO's reviews
+      for (const hour of [10, 15]) {
+        h.cost.push([midnight + hour * HOUR_MS, '', Math.round((0.5 + rand() * 0.8) * 100) / 100]); // the CEO's reviews
+        h.usage.push(demoUsageRecord('', 'deepseek/deepseek-flash', midnight + hour * HOUR_MS, 0));
+      }
     }
   });
   for (const list of [h.merges, h.qa, h.checks, h.cost] as [number, ...unknown[]][][]) {
     for (let i = list.length - 1; i >= 0; i--) if (list[i][0] > now) list.splice(i, 1); // nothing from later today
   }
+  h.usage = h.usage.filter((u) => u.at === null || u.at <= now);
   prune(h, now);
   return h;
 }

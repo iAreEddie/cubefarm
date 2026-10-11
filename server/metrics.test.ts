@@ -97,7 +97,7 @@ describe('recording the history', () => {
       },
       NOW,
     );
-    expect(h).toEqual({ merges: [[NOW - MIN, 'o/a', 3, null]], qa: [[NOW, 'o/a', true, 60]], checks: [], cost: [[NOW, '', 1.5]] });
+    expect(h).toEqual({ merges: [[NOW - MIN, 'o/a', 3, null]], qa: [[NOW, 'o/a', true, 60]], checks: [], cost: [[NOW, '', 1.5]], usage: [] });
     expect(loadHistory(undefined, NOW)).toEqual(emptyHistory());
   });
 });
@@ -162,6 +162,7 @@ describe('the numbers', () => {
         [NOW - MIN, '', 0.5],
         [NOW - MIN, 'gone/repo', 7], // a floor that was disconnected
       ],
+      usage: [],
     };
     const v = opsView([floor(), floor({ repoId: 'o/b', floor: 2 })], h, NOW);
     const a = v.floors[0];
@@ -176,6 +177,46 @@ describe('the numbers', () => {
   it('is empty-handed rather than wrong with no history', () => {
     const v = opsView([floor()], emptyHistory(), NOW);
     expect(v.total).toMatchObject({ mergedToday: 0, leadMs: null, qaWaitMs: null, qaPass: null, ciPass: null, ciRuns: 0, ciMs: null, costToday: 0 });
+  });
+});
+
+describe('cost detail (#15)', () => {
+  const usage = (repo: string, model: string, reportedUsd: number | null, at: number) => ({
+    key: `${repo}:${model}:${at}`,
+    sessionId: `${repo}-${at}`,
+    scope: 'message' as const,
+    at,
+    provider: 'claude' as const,
+    model,
+    modelRaw: model,
+    usage: { uncachedInput: 100, cachedInput: 0, cacheWriteInput: 0, output: 50, reasoning: null, reasoningIncludedInOutput: true },
+    reportedUsd,
+    source: 'claude-sdk' as const,
+    repo,
+  });
+
+  it('reconciles company totals with floors plus the CEO, and excludes unrelated usage', () => {
+    const h = emptyHistory();
+    h.since = NOW - 10 * HOUR_MS;
+    h.usage.push(usage('o/a', 'claude-opus', 1, NOW - 2 * HOUR_MS), usage('', 'claude-opus', 0.5, NOW - HOUR_MS), usage('gone/repo', 'claude-opus', 7, NOW - HOUR_MS));
+    const v = opsView([floor(), floor({ repoId: 'o/b', floor: 2 })], h, NOW);
+    expect(v.floors[0].cost!.reportedUsd).toBeCloseTo(1, 6);
+    expect(v.cost!.reportedUsd).toBeCloseTo(1.5, 6);
+    expect(v.cost!.records).toBe(2); // gone/repo is not a connected floor nor the CEO
+    expect(v.cost!.byModel[0]).toMatchObject({ model: 'claude-opus', usd: 1.5 });
+    expect(v.cost!.partialHistory).toBe(true); // the record starts inside the 24h window
+    expect(v.cost!.elapsedHours).toBeCloseTo(10, 6);
+    expect(v.cost!.byModel[0].usdPerHour).toBeCloseTo(0.15, 6);
+  });
+
+  it('shows an unavailable model without a verified rate, and keeps estimates out of the reported figure', () => {
+    const h = emptyHistory();
+    h.usage.push(usage('o/a', 'gpt-5.6-sol', null, NOW - HOUR_MS));
+    const v = opsView([floor()], h, NOW);
+    expect(v.cost!.reportedUsd).toBe(0);
+    expect(v.cost!.unavailable).toBe(1);
+    expect(v.cost!.partial).toBe(true);
+    expect(v.cost!.byModel[0]).toMatchObject({ model: 'gpt-5.6-sol', kind: 'unavailable', usd: 0 });
   });
 });
 

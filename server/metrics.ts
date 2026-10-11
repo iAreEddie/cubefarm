@@ -1,5 +1,6 @@
+import { hourlyByModel, resolveUsage, rollup, type RateOverrides, type UsageRecord } from '../shared/cost.ts';
 import { prStage } from '../shared/ops.ts';
-import type { AgentRole, AgentStatus, OpsAlarm, OpsFloor, OpsNumbers, OpsView, PullInfo, QaView } from '../shared/types.ts';
+import type { AgentRole, AgentStatus, OpsAlarm, OpsCostView, OpsFloor, OpsNumbers, OpsView, PullInfo, QaView } from '../shared/types.ts';
 
 // Mission control's numbers (#216): pure functions over the office's state now, plus a compact rolling history of
 // merges, QA verdicts, GitHub check runs and session costs. The history lives in the state file for a week; the
@@ -27,9 +28,13 @@ export interface OpsHistory {
   qa: QaEntry[];
   checks: CheckEntry[];
   cost: CostEntry[];
+  /** The normalized usage behind the cost, per session/message (#15): the basis for the by-model hourly detail. */
+  usage: UsageRecord[];
+  /** When the office's record starts (epoch ms), for disclosing partial hourly history. */
+  since?: number;
 }
 
-export const emptyHistory = (): OpsHistory => ({ merges: [], qa: [], checks: [], cost: [] });
+export const emptyHistory = (): OpsHistory => ({ merges: [], qa: [], checks: [], cost: [], usage: [] });
 
 const fresh = <T extends [number, ...unknown[]]>(list: T[], now: number) =>
   list
@@ -43,6 +48,8 @@ export function prune(h: OpsHistory, now: number) {
   h.qa = fresh(h.qa, now);
   h.checks = fresh(h.checks, now);
   h.cost = fresh(h.cost, now);
+  // Usage records may carry no timestamp (a CLI that didn't report one): those are kept, the rest pruned by age.
+  h.usage = h.usage.filter((r) => r.at === null || now - r.at <= KEEP_MS).slice(-MAX_ENTRIES);
 }
 
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
@@ -57,9 +64,18 @@ export function loadHistory(raw: unknown, now: number): OpsHistory {
     qa: list(r.qa).filter((e) => typeof e[2] === 'boolean' && orNull(e[3])) as QaEntry[],
     checks: list(r.checks).filter((e) => typeof e[2] === 'string' && typeof e[3] === 'boolean' && isNum(e[4])) as CheckEntry[],
     cost: list(r.cost).filter((e) => isNum(e[2])) as CostEntry[],
+    usage: (Array.isArray(r.usage) ? r.usage : []).filter(isUsageRecord),
+    ...(isNum(r.since) ? { since: r.since } : {}),
   };
   prune(h, now);
   return h;
+}
+
+/** Enough of a UsageRecord to be worth keeping from the state file: the accounting tolerates missing optional bits. */
+function isUsageRecord(v: unknown): v is UsageRecord {
+  if (!v || typeof v !== 'object') return false;
+  const r = v as Record<string, unknown>;
+  return typeof r.key === 'string' && typeof r.sessionId === 'string' && typeof r.model === 'string' && !!r.usage && typeof r.usage === 'object';
 }
 
 // ---------- recording ----------
@@ -108,6 +124,14 @@ export function recordQa(h: OpsHistory, repo: string, pass: boolean, waitMs: num
 export function recordCost(h: OpsHistory, repo: string, usd: number, now: number) {
   if (!(usd > 0)) return;
   h.cost.push([now, repo, Math.round(usd * 10_000) / 10_000]);
+  prune(h, now);
+}
+
+/** A finished session's normalized usage (#15), tagged with its floor ('' for the CEO), for the by-model detail. */
+export function recordUsage(h: OpsHistory, repo: string, records: UsageRecord[], now: number): void {
+  if (!records.length) return;
+  h.since ??= now;
+  for (const r of records) h.usage.push({ ...r, repo });
   prune(h, now);
 }
 
@@ -213,10 +237,26 @@ export function floorAlarms(f: OpsFloorState, now: number): OpsAlarm[] {
   return [...prs, ...agents];
 }
 
+/**
+ * A floor's (or the office's) cost detail: the reported/estimated breakdown, plus the last 24 hours by model with
+ * tokens/hour and $/hour. `mine` selects the usage the floor owns; '' is the CEO.
+ */
+export function costView(h: OpsHistory, mine: (repo: string) => boolean, now: number, overrides: RateOverrides = {}): OpsCostView {
+  const resolved = h.usage.filter((r) => mine(r.repo ?? '')).map((r) => resolveUsage(r, overrides));
+  const total = rollup(resolved);
+  const hourly = hourlyByModel(resolved, now, 24, h.since ?? null);
+  return {
+    ...total,
+    byModel: hourly.rows,
+    elapsedHours: hourly.elapsedHours,
+    partialHistory: h.since !== undefined && h.since > now - DAY_MS,
+  };
+}
+
 /** Mission control: every floor's numbers, the total (connected floors and the CEO) and the alarms, oldest first. */
 export function opsView(floors: OpsFloorState[], h: OpsHistory, now: number): OpsView {
   const sorted = [...floors].sort((a, b) => a.floor - b.floor);
-  const rows: OpsFloor[] = sorted.map((f) => ({ repoId: f.repoId, floor: f.floor, ...rightNow(f), ...flow(h, (r) => r === f.repoId, now), alarms: floorAlarms(f, now).length }));
+  const rows: OpsFloor[] = sorted.map((f) => ({ repoId: f.repoId, floor: f.floor, ...rightNow(f), ...flow(h, (r) => r === f.repoId, now), alarms: floorAlarms(f, now).length, cost: costView(h, (r) => r === f.repoId, now) }));
   const connected = new Set(sorted.map((f) => f.repoId));
   const sum = (k: keyof ReturnType<typeof rightNow>) => rows.reduce((s, r) => s + r[k], 0);
   const total: OpsNumbers = {
@@ -236,6 +276,7 @@ export function opsView(floors: OpsFloorState[], h: OpsHistory, now: number): Op
     floors: rows,
     total,
     ceoCostToday: flow(h, (r) => r === '', now).costToday,
+    cost: costView(h, (r) => connected.has(r) || r === '', now),
     alarms: sorted.flatMap((f) => floorAlarms(f, now)).sort((a, b) => a.since - b.since),
   };
 }

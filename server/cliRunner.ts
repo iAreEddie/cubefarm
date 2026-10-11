@@ -24,6 +24,8 @@ import {
   type SessionOptions,
   type SessionResult,
 } from './agentRunner.ts';
+import { parseClaudeTranscript, parseCodexRollout, parseOpencodeMessages, summariseSession } from './telemetry.ts';
+import { modelKey, type UsageRecord } from '../shared/cost.ts';
 import type { OfficeTools } from './ceo.ts';
 import type { AgentTerminal } from './terminal.ts';
 import type { AgentCli } from '../shared/types.ts';
@@ -152,6 +154,23 @@ function quietly(fn: () => void) {
   } catch {
     // the CLI is gone; its exit is on the way
   }
+}
+
+/**
+ * The rollout file Codex writes for a thread: its name carries the thread id. Codex keeps them under CODEX_HOME's
+ * `sessions` folder, dated, so the file is found by walking that tree. Missing (a CLI without rollouts, or a
+ * CODEX_HOME the office doesn't know) is no evidence: the session's cost stays unavailable.
+ */
+export function findCodexRollout(codexHome: string, threadId: string): string | null {
+  if (!threadId) return null;
+  try {
+    for (const name of fs.readdirSync(path.join(codexHome, 'sessions'), { recursive: true }) as string[]) {
+      if (name.endsWith('.jsonl') && name.includes(threadId)) return path.join(codexHome, 'sessions', name);
+    }
+  } catch {
+    // no sessions folder, or no permission: nothing to read
+  }
+  return null;
 }
 
 // ---------- CLIs that outlive their session ----------
@@ -375,8 +394,10 @@ export function startCliSession(opts: SessionOptions, callbacks: SessionCallback
   const usageResets = new Map<string, number | null>();
   const warned = new Set<string>();
   let done = false;
-  let costUsd = 0;
+  let costUsd = 0; // the provider's reported figure (Claude's status line); 0 when none was reported
   let turns = 0;
+  const usageByKey = new Map<string, UsageRecord>(); // normalized usage seen this session, deduplicated by key
+  let lastModel = ''; // the model the transcript last named, for attributing Claude's reported total
   let lastText = '';
   let turnError: string | null = null; // the turn failed (OpenCode reports errors separately from going idle)
   let begun = false; // the CLI took its first prompt
@@ -405,8 +426,64 @@ export function startCliSession(opts: SessionOptions, callbacks: SessionCallback
     }
   };
 
+  /** Claude Code's transcript: the models and token usage of each assistant turn (the CLI reports no cost per turn). */
+  const collectClaudeTranscript = (file: string) => {
+    try {
+      for (const r of parseClaudeTranscript(fs.readFileSync(file, 'utf8'), { sessionId, cli: 'claude' })) {
+        usageByKey.set(r.key, r);
+        if (r.modelRaw) lastModel = r.modelRaw;
+      }
+    } catch {
+      // the transcript isn't written yet, or is gone: no tokens to add
+    }
+  };
+
+  /** Codex's rollout for a thread, read once it names one (each token_count event is a turn's usage). */
+  const collectCodexRollout = (thread: string) => {
+    if (!thread) return;
+    const home = codexHome ?? process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex');
+    const file = findCodexRollout(home, thread);
+    if (!file) return;
+    try {
+      for (const r of parseCodexRollout(fs.readFileSync(file, 'utf8'), { sessionId: thread, cli: 'codex' })) usageByKey.set(r.key, r);
+    } catch {
+      // unreadable: no usage
+    }
+  };
+
+  /**
+   * The session's cost as it will be reported: the provider's reported total when there is one (Claude's status line),
+   * otherwise an estimate from measured tokens and verified rates. The reported figure keeps #7's budget semantics;
+   * the estimate stays separate. Never a zero unless the usage genuinely was free or nothing was measured — an
+   * unmeasured session is unavailable, not free.
+   */
+  const costSummary = (): Pick<SessionResult, 'costUsd' | 'estimatedUsd' | 'costKind' | 'usage'> => {
+    const records = [...usageByKey.values()];
+    if (cli === 'claude' && costUsd > 0) {
+      const model = lastModel || 'claude';
+      records.push({
+        key: `claude:${sessionId}:session`,
+        sessionId,
+        scope: 'session',
+        at: Date.now(),
+        provider: 'claude',
+        model: modelKey(model),
+        modelRaw: model,
+        cli: 'claude',
+        usage: { uncachedInput: null, cachedInput: null, cacheWriteInput: null, output: null, reasoning: null, reasoningIncludedInOutput: true },
+        reportedUsd: costUsd,
+        source: 'claude-statusline',
+      });
+    }
+    const summary = summariseSession(records);
+    const reported = summary.reportedUsd > 0 ? summary.reportedUsd : cli === 'claude' ? costUsd : 0;
+    const estimated = summary.reportedUsd > 0 ? 0 : summary.estimatedUsd;
+    const kind = reported > 0 ? 'reported' : estimated > 0 ? 'estimated' : summary.records.length ? summary.kind : 'unavailable';
+    return { costUsd: reported, estimatedUsd: estimated, costKind: kind, usage: summary.records };
+  };
+
   /** The session is over. A CLI kept alive (keepAlive) that ended its turn normally stays at its prompt (keep); others close. */
-  const finish = (r: Omit<SessionResult, 'costUsd' | 'turns'>, keep = false) => {
+  const finish = (r: Omit<SessionResult, 'costUsd' | 'turns' | 'estimatedUsd' | 'costKind' | 'usage'>, keep = false) => {
     if (done) return;
     done = true;
     for (const t of [finishTimer, bootTimer]) clearTimeout(t);
@@ -421,7 +498,7 @@ export function startCliSession(opts: SessionOptions, callbacks: SessionCallback
       else endLive(l);
     }
     cb.tool(null);
-    cb.finished({ ...r, costUsd, turns });
+    cb.finished({ ...r, ...costSummary(), turns });
   };
 
   /** A turn ended: finished, unless the CLI picks up another prompt within the grace period. */
@@ -529,6 +606,7 @@ export function startCliSession(opts: SessionOptions, callbacks: SessionCallback
         return {};
       }
       case 'Stop': {
+        if (cli === 'claude' && typeof b.transcript_path === 'string') collectClaudeTranscript(b.transcript_path);
         const text = String(b.last_assistant_message ?? '').trim();
         turns += 1;
         if (text) {
@@ -563,6 +641,12 @@ export function startCliSession(opts: SessionOptions, callbacks: SessionCallback
           if (mainThread || !launched.some((p) => input.startsWith(p.slice(0, 40)))) return {};
           mainThread = thread;
         }
+        // The OpenCode plugin sends the session's messages (tokens, model and the provider's cost figure); Codex's
+        // notify carries no usage, so its rollout file is read once we know the thread.
+        if (cli === 'opencode' && Array.isArray(b.usage)) {
+          for (const r of parseOpencodeMessages(b.usage, { sessionId, cli: 'opencode' })) usageByKey.set(r.key, r);
+        }
+        if (cli === 'codex' && thread) collectCodexRollout(thread);
         if (thread) {
           cb.sessionId(thread);
           if (live && live.resumeId !== thread) {

@@ -34,7 +34,7 @@ import { QA_RESUME_PROMPT, qaRetry } from './qaRetry.ts';
 import { drainDecision, lastUpdateMessage, POSTPONE_MS, type DrainInput, type LastUpdate } from './officeUpdate.ts';
 import { clampPacingSessions, DEFAULT_PACING_SESSIONS, mayStart, PACING_MS, pacingMessage, resumeRefusal, usageLabel, usageView, waived, warningView, type UsageWarning, type Waiver, type WorkKind } from './pacing.ts';
 import { budgetAlert, budgetBlocksNewWork, budgetStatus, clampBudgetUsd } from '../shared/budget.ts';
-import { emptyHistory, loadHistory, opsView, recordChecks, recordCost, recordMerges, recordQa, type OpsFloorState, type OpsHistory } from './metrics.ts';
+import { emptyHistory, loadHistory, opsView, recordChecks, recordCost, recordMerges, recordQa, recordUsage, type OpsFloorState, type OpsHistory } from './metrics.ts';
 import { clampTrimIdleMin, DEFAULT_TRIM_IDLE_MIN, desksToTrim, formatBytes, freedMessage, idleSince, TRIM_SWEEP_MS } from './deskTrim.ts';
 import { cliLabel, isCli } from './clis.ts';
 import { machineName } from './machines.ts';
@@ -64,6 +64,7 @@ import { CEO_ID, DEFAULT_DOG_NAME, DEFAULT_MAX_AGENTS, FLOOR_SEATS, INSTALL_STEP
 import type {
   AgentActivity,
   AgentCli,
+  AgentCostView,
   AgentLook,
   AgentPromptView,
   AgentRole,
@@ -126,6 +127,29 @@ interface PersistedRepo {
   budgetStopped: boolean; // the 100% alert has been posted for the current crossing
 }
 
+/**
+ * A finished session's cost as the office shows it (#15): the provider's reported figure and the token-based estimate
+ * kept apart. A session the CLIs reported nothing about is "unavailable", never a zero, so it doesn't look free.
+ */
+function sessionCost(result: SessionResult): AgentCostView {
+  const reported = Math.max(0, result.costUsd);
+  const estimated = Math.max(0, result.estimatedUsd ?? 0);
+  const records = result.usage?.length ?? 0;
+  const kind = result.costKind ?? (reported > 0 ? 'reported' : estimated > 0 ? 'estimated' : 'unavailable');
+  return {
+    reportedUsd: reported,
+    estimatedUsd: estimated,
+    freeUsd: 0,
+    totalUsd: reported + estimated,
+    unavailable: kind === 'unavailable' ? Math.max(1, records) : 0,
+    records,
+    coverage: kind === 'unavailable' ? 0 : 1,
+    partial: kind === 'unavailable',
+    currency: 'USD',
+    kind,
+  };
+}
+
 interface PersistedAgent {
   id: string;
   name: string;
@@ -151,6 +175,7 @@ interface PersistedAgent {
   startedAt: number | null;
   endedAt: number | null;
   costUsd: number;
+  cost: AgentCostView | null; // the last session's cost, reported and estimated kept apart (#15)
   turns: number;
   sessionId: string | null;
   sessionCli: AgentCli | null; // the CLI whose session sessionId is: only it can resume it
@@ -646,6 +671,7 @@ export class Swarm {
         agents: (loaded.agents ?? []).map((raw) => legacyAgent<PersistedAgent>(raw)).map((a) => ({
           ...a,
           machine: a.machine ?? null,
+          cost: a.cost ?? null,
           effort: a.effort ?? '',
           look: a.look ?? lookFor(a.name),
           style: cleanStyle(a.style),
@@ -1008,6 +1034,7 @@ export class Swarm {
       startedAt: a.startedAt,
       endedAt: a.endedAt,
       costUsd: a.costUsd,
+      cost: a.cost ?? undefined,
       turns: a.turns,
       browserUrl: rt.browserUrl,
       hasScreenshot: !!rt.screenshot,
@@ -2112,6 +2139,7 @@ export class Swarm {
       startedAt: null,
       endedAt: null,
       costUsd: 0,
+      cost: null,
       turns: 0,
       sessionId: null,
       sessionCli: null,
@@ -2383,6 +2411,7 @@ export class Swarm {
       startedAt: Date.now(),
       endedAt: null,
       costUsd: 0,
+      cost: null,
       turns: 0,
       lastError: null,
       ...patch,
@@ -2622,16 +2651,20 @@ export class Swarm {
     rt.session = null;
     rt.currentTool = null;
     a.endedAt = Date.now();
-    a.costUsd += result.costUsd;
+    const displayUsd = result.costUsd + (result.estimatedUsd ?? 0); // reported + estimated, what the boards show
+    a.costUsd += displayUsd;
+    a.cost = sessionCost(result);
     a.turns += result.turns;
-    recordCost(this.state.ops, repo.id, result.costUsd, a.endedAt);
-    // The floor's budget counts only what a session reported: CLIs that report nothing add no spend and never block it (#7).
+    recordCost(this.state.ops, repo.id, displayUsd, a.endedAt);
+    recordUsage(this.state.ops, repo.id, result.usage ?? [], a.endedAt);
+    // The floor's budget counts only what a session reported: estimates stay separate and CLIs that report nothing add
+    // no spend and never block it (#7).
     if (result.costUsd > 0) {
       repo.spentUsd = Math.round((repo.spentUsd + result.costUsd) * 1e4) / 1e4;
       repo.costSessions += 1;
       this.emitRepo(repo);
     }
-    this.ledger({ kind: 'session', agentId: a.id, key: `${a.id}:${a.startedAt}:${a.endedAt}`, costUsd: result.costUsd, turns: result.turns }, false); // emitted below
+    this.ledger({ kind: 'session', agentId: a.id, key: `${a.id}:${a.startedAt}:${a.endedAt}`, costUsd: displayUsd, turns: result.turns }, false); // emitted below
     // Dev servers the agent forgot to stop would otherwise keep its port and lock its desk folder.
     void this.releaseDesk(a, repo).catch(() => undefined);
     if (result.interrupted) this.interrupted(a);
@@ -3838,6 +3871,7 @@ export class Swarm {
         startedAt: null,
         endedAt: null,
         costUsd: 0,
+        cost: null,
         turns: 0,
         sessionId: null,
         sessionCli: null,
@@ -3957,7 +3991,7 @@ export class Swarm {
     const floor = this.ceoFloor(job.repoId);
     const label = jobLabel(job, floor);
     this.state.ceo.job = job;
-    Object.assign(a, { status: 'working' as AgentStatus, task: null, issueNumber: null, issueTitle: label, startedAt: Date.now(), endedAt: null, costUsd: 0, turns: 0, lastError: null });
+    Object.assign(a, { status: 'working' as AgentStatus, task: null, issueNumber: null, issueTitle: label, startedAt: Date.now(), endedAt: null, costUsd: 0, cost: null, turns: 0, lastError: null });
     this.appendLog(a, [
       { kind: 'system', text: '' },
       { kind: 'system', text: `━━━ ${label} ━━━` },
@@ -4023,9 +4057,12 @@ export class Swarm {
     rt.session = null;
     rt.currentTool = null;
     a.endedAt = Date.now();
-    a.costUsd += result.costUsd;
+    const displayUsd = result.costUsd + (result.estimatedUsd ?? 0);
+    a.costUsd += displayUsd;
+    a.cost = sessionCost(result);
     a.turns += result.turns;
-    recordCost(this.state.ops, '', result.costUsd, a.endedAt);
+    recordCost(this.state.ops, '', displayUsd, a.endedAt);
+    recordUsage(this.state.ops, '', result.usage ?? [], a.endedAt);
     const job = this.state.ceo.job;
     this.state.ceo.job = null;
     if (job?.kind === 'triage') this.endTriage(job);

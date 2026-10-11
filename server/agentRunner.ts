@@ -2,12 +2,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { query, type CanUseTool, type Options, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { AgentCli, AgentRole, AgentTask, EffortLevel, LogKind } from '../shared/types.ts';
+import type { CostKind, UsageRecord } from '../shared/cost.ts';
 import type { OfficeTools } from './ceo.ts';
 import type { UsageWarning } from './pacing.ts';
 import type { AgentTerminal } from './terminal.ts';
 import { browserProblem, playwrightMcp } from './browser.ts';
 import { CROSS_TURN_TOOLS } from './clis.ts';
 import { VERSION } from './config.ts';
+import { parseClaudeSdkUsage, summariseSession } from './telemetry.ts';
 
 // One Claude Code instance (via the Claude Agent SDK) on one task (building an issue, testing or fixing a PR) in its own git worktree.
 // The CEO runs through here too, with the office tools instead of a shell.
@@ -54,7 +56,14 @@ export interface LogEntry {
 export interface SessionResult {
   ok: boolean;
   text: string;
+  /** Reported spend only (the provider's own figure): what a floor's budget counts (#7). 0 when none was reported. */
   costUsd: number;
+  /** Cost worked out from measured tokens and a verified rate (#15), kept out of the budget and shown apart. */
+  estimatedUsd?: number;
+  /** Where `costUsd`/`estimatedUsd` came from: reported, estimated, free, or unavailable. */
+  costKind?: CostKind;
+  /** The session's normalized usage per message/model, for mission control's by-model detail (#15). */
+  usage?: UsageRecord[];
   turns: number;
   errors: string[];
   structured?: unknown;
@@ -371,10 +380,18 @@ export function startSession(opts: SessionOptions, callbacks: SessionCallbacks):
     if (pendingTurns > 0) return;
     input.close();
     const ok = msg.subtype === 'success' && !msg.is_error;
+    // The result carries per-model totals and cost; when it has neither, fall back to the running total from earlier.
+    const modelUsage = (msg as unknown as { modelUsage?: unknown }).modelUsage;
+    const summary = msg.subtype === 'success' ? summariseSession(parseClaudeSdkUsage(modelUsage, { sessionId: msg.session_id, cli: 'claude' })) : null;
+    const reported = summary && summary.reportedUsd > 0 ? summary.reportedUsd : lastCost;
+    const estimated = summary && summary.reportedUsd > 0 ? 0 : (summary?.estimatedUsd ?? 0);
     cb.finished({
       ok,
       text: msg.subtype === 'success' ? msg.result : '',
-      costUsd: lastCost,
+      costUsd: reported,
+      estimatedUsd: estimated,
+      costKind: reported > 0 ? 'reported' : estimated > 0 ? 'estimated' : (summary?.kind ?? 'unavailable'),
+      usage: summary?.records ?? [],
       turns: lastTurns,
       errors: msg.subtype === 'success' ? [] : msg.errors,
       structured: msg.subtype === 'success' ? msg.structured_output : undefined,

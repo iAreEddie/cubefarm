@@ -57,7 +57,7 @@ The rest of their look is seeded from their id (hair, glasses, outfit, build and
 
 ## Mission control
 
-The curved bank of screens behind reception in the lobby shows how the company is doing, per floor and in total: the pipeline (issues ready to start, being built, in QA, being fixed, ready to merge, needing you), PRs merged today and in the last hour with a 24-hour chart, median lead time (issue to merge) and QA wait over the last 24 hours, GitHub's checks (pass rate and median duration over 7 days), who's busy, idle or in error, and today's cost per floor. The cost is an estimate from the cost finished sessions report. Each floor's team sign carries a compact line of its own numbers. The manager's console → **Mission control** has the same numbers as a table.
+The curved bank of screens behind reception in the lobby shows how the company is doing, per floor and in total: the pipeline (issues ready to start, being built, in QA, being fixed, ready to merge, needing you), PRs merged today and in the last hour with a 24-hour chart, median lead time (issue to merge) and QA wait over the last 24 hours, GitHub's checks (pass rate and median duration over 7 days), who's busy, idle or in error, and the last 24 hours' cost per floor. The cost keeps reported spend and token-based estimates apart, labels their provenance, and details tokens/hour and dollars/hour by model (docs/costs.md). Each floor's team sign carries a compact line of its own numbers. The manager's console → **Mission control** has the same numbers as a table.
 
 The bottom middle screen is Claude's usage meter: normal, pacing or paused, the limit and how full it was at the last warning, and when it resets. While the office paces itself, `E` on the meter resumes full speed (after asking).
 

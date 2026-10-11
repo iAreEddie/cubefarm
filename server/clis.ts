@@ -548,21 +548,20 @@ process.stdin.on('end', async () => {
 });
 `;
 
-/** OpenCode plugin: reports its session and when it goes idle (a turn is complete). No imports: loaded from a file. */
-export const OPENCODE_PLUGIN_SOURCE = String.raw`// cubefarm: tells the office when OpenCode's session goes idle.
+/** OpenCode plugin: reports its session, its usage and when it goes idle (a turn is complete). No imports: loaded from a file. */
+export const OPENCODE_PLUGIN_SOURCE = String.raw`// cubefarm: tells the office when OpenCode's session goes idle, with the session's measured usage.
 export default async function CubefarmPlugin({ client } = {}) {
   const url = process.env.CUBEFARM_NOTIFY_URL;
   if (!url) return {};
   let root;
   const post = (body) =>
     fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(3000) }).catch(() => {});
-  const lastReply = async (id) => {
+  const messages = async (id) => {
     try {
       const res = await client.session.messages({ path: { id } });
-      const reply = (res?.data ?? []).filter((m) => m?.info?.role === 'assistant').pop();
-      return (reply?.parts ?? []).filter((p) => p?.type === 'text').map((p) => p.text).join('\n').trim();
+      return res?.data ?? [];
     } catch {
-      return '';
+      return [];
     }
   };
   return {
@@ -571,7 +570,13 @@ export default async function CubefarmPlugin({ client } = {}) {
       if (event?.type === 'session.created' && !props.info?.parentID && !root) root = props.info?.id;
       const sessionID = props.sessionID ?? props.info?.id;
       if (event?.type === 'session.idle' && (!root || sessionID === root)) {
-        post({ hook_event_name: 'TurnComplete', session_id: sessionID ?? null, last_assistant_message: sessionID ? await lastReply(sessionID) : '' });
+        const msgs = sessionID ? await messages(sessionID) : [];
+        const assistants = msgs.filter((m) => m?.info?.role === 'assistant');
+        const reply = assistants[assistants.length - 1];
+        const text = (reply?.parts ?? []).filter((p) => p?.type === 'text').map((p) => p.text).join('\n').trim();
+        // The assistant messages carry tokens, model and the provider's own cost: the office prices them itself.
+        const usage = assistants.map((m) => ({ info: m.info }));
+        post({ hook_event_name: 'TurnComplete', session_id: sessionID ?? null, last_assistant_message: text, usage });
       }
       if (event?.type === 'session.error') post({ hook_event_name: 'TurnError', session_id: sessionID ?? null, error: String(props.error?.data?.message ?? props.error?.name ?? 'error') });
     },

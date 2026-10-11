@@ -86,7 +86,8 @@ export function AgentCard() {
         </ul>
       )}
       <div className="ac-foot">
-        this task so far: {agent.turns} turn{agent.turns === 1 ? '' : 's'} · ${agent.costUsd.toFixed(2)}
+        this task so far: {agent.turns} turn{agent.turns === 1 ? '' : 's'} · ~${agent.costUsd.toFixed(2)}
+        {agent.cost ? ` (${agent.cost.kind === 'mixed' ? 'reported + estimated' : agent.cost.kind})` : ''}
         {round ? ` · QA round ${round}` : ''}
       </div>
     </div>
