@@ -273,6 +273,18 @@ describe('planning guidance', () => {
 describe('team guidance', () => {
   const prompt = (scaling: 'approve' | 'auto') => ceoSystemPrompt({ name: 'Luna', company: 'Acme', manager: 'Sam', notesFile: 'notes.md', sessionLimit: 0, maxAgents: 8, scaling });
 
+  it('names the Chief Engineer as its first line for technical faults', () => {
+    const p = prompt('approve');
+    expect(p).toContain('Doc, the Chief Engineer');
+    expect(p).toContain('Report technical faults to them');
+    // The company stays the manager's: this role must not read as owning hiring, budget or new work.
+    expect(p).toContain('They do not own the company');
+    expect(p).toContain('stay with the manager');
+    // A message from the manager must still outrank it, and it must not become a reason to hold a turn open.
+    expect(p).toContain("a direct message from the manager always outranks Doc's");
+    expect(p).toContain('Never wait for Doc mid-job');
+  });
+
   it('sizes teams from throughput, within the floor max, and keeps one agent', () => {
     expect(prompt('approve')).toContain("Size each floor's team from its throughput");
     expect(prompt('approve')).toContain('A floor holds at most 8.');

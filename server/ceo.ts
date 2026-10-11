@@ -6,13 +6,37 @@ import { HttpError } from './httpError.ts';
 import { ONE_TURN } from './prompts.ts';
 import { MAX_TRIAGES, type TriagePr } from './triage.ts';
 
-// The CEO: a Claude Code session in the lobby that runs the company instead of writing code.
+// The CEO: a coding-agent session in the lobby that runs the company instead of writing code. It runs the office's
+// default coding agent, or the one the manager picks for it, and reaches the office through its tools below.
 // It studies each floor's repo, sizes its team of interchangeable agents from its throughput (team changes the
 // manager approves, or that apply at once), plans work as GitHub issues, and writes each floor's QA brief. Everything
 // it changes goes through the office tools below, so the swarm stays the single source of truth.
 
 /** Refused file_issue: the CEO never decides on new work itself (askedFor). */
 export const NOT_ASKED = "Only the manager decides on new work, and they haven't asked for any in this job. Suggest it in your final message instead; they can ask you to file it.";
+
+/**
+ * The engineer who keeps the office itself working, and the CEO's first line for anything technical. The manager owns
+ * the company; this role owns the machinery the company runs on, which is a different job from running the company —
+ * a CEO that is guessing about the build, the CLI sessions or CI cannot tell a real failure from a broken harness.
+ * Kept here rather than in settings because it is who the office is, not something the manager configures per company.
+ */
+export const CHIEF_ENGINEER = {
+  name: 'Doc',
+  title: 'Chief Engineer',
+  /** How the CEO should treat them. One line, because the CEO's prompt is paid for on every session. */
+  line:
+    'Doc, the Chief Engineer, is your first line for anything technical: the office itself, the build, CI, the coding-agent CLIs, ' +
+    'and any session that failed, stalled or behaved oddly. Report technical faults to them and ask them to confirm the state ' +
+    'of a machine or a build; their word settles a technical question so you do not have to guess. They do not own the company: ' +
+    'team size, budget, priorities, new work, hiring and anything the manager has asked for stay with the manager, and a direct ' +
+    "message from the manager always outranks Doc's. Never wait for Doc mid-job: end your turn with the report or the question, " +
+    'as your rules already say.',
+} as const;
+
+/** The same role, named for a human: used in the briefs the manager reads and in the app. */
+export const CHIEF_ENGINEER_TITLE = `${CHIEF_ENGINEER.name}, the ${CHIEF_ENGINEER.title}`;
+
 
 export interface CeoJob {
   kind: CeoJobKind;
@@ -364,6 +388,7 @@ export function ceoSystemPrompt(o: {
   return [
     `You are ${o.name}, the CEO of ${o.company || 'an autonomous software company'}, run from an office building called cubefarm. You work from the corner office in the lobby.`,
     `Every floor of the building is one GitHub repository with its own team of AI coding agents. The agents are interchangeable: each is a coding-agent session that takes whatever is next on its floor's board. A free agent builds the next issue in its own git worktree and opens a pull request; another free agent, in a fresh session, reviews and verifies every pull request (code review, tests, build, and a real browser via Playwright); failed ones go back for fixes. On floors with auto-merge on, the office merges a PR by itself once QA passes and GitHub's checks are green; on the others, ${manager} merges. The manager is your board: they decide on team changes.`,
+    `${CHIEF_ENGINEER.line}`,
     '',
     'Your job is to run the company, not to write code:',
     '- Understand each project: what it is, its stack and how far along it is. Projects differ a lot: a static marketing site, a 3D browser game and a REST API need different QA.',

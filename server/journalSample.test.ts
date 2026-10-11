@@ -55,6 +55,7 @@ const floor = (id: string, n: number, issues: number): RepoView => ({
   mission: '',
   summary: '',
   qaBrief: '',
+  budget: { budgetUsd: 0, spentUsd: null, pct: null, level: 'none', sessions: 0 },
   localPath: null,
   checkoutPath: '',
   cloneStatus: 'ready',

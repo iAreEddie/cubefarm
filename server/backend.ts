@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import * as github from './github.ts';
 import * as workspace from './workspace.ts';
 import { startSession, type SessionCallbacks, type SessionHandle, type SessionOptions } from './agentRunner.ts';
-import { hooksReady, officeProcesses, reconnectClis, releaseClis, startCliSession, terminalsAvailable, type ReconnectedCli } from './cliRunner.ts';
+import { hooksReady, officeProcesses, reconnectClis, releaseClis, startCliSession, terminalsAvailable, cliAlive, type ReconnectedCli } from './cliRunner.ts';
 import { localMachines, type MachineProvider } from './machines.ts';
 import { detectClis } from './clis.ts';
 import { installDesk, type DepsCallbacks, type DepsOutcome } from './deps.ts';
@@ -83,6 +83,11 @@ export interface Backend {
   reconnectClis(terminalFor: (agentId: string) => AgentTerminal | null): Promise<ReconnectedCli[]>;
   /** The office follows those CLIs' sessions again: hooks that waited for it can come in. */
   hooksReady(): void;
+  /**
+   * Whether the CLI in this terminal is still running: false when a session ended without the office being told (the
+   * keeper stops its terminals after ORPHAN_MS with no office), null when the office never started one there.
+   */
+  cliAlive(term: AgentTerminal): boolean | null;
   /** The office is stopping: its CLIs carry on in the keeper through a restart (true), or stop with it. */
   releaseClis(restart: boolean): Promise<void>;
   /** The coding-agent CLIs installed on this machine. */
@@ -163,6 +168,7 @@ export const realBackend: Backend = {
   terminals: terminalsAvailable,
   reconnectClis: (terminalFor) => (terminalsAvailable ? reconnectClis(terminalFor) : Promise.resolve([])),
   hooksReady,
+  cliAlive: (term) => (terminalsAvailable ? cliAlive(term) : null),
   releaseClis,
   detectClis,
   previews: realPreviews,

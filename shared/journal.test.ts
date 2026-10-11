@@ -69,6 +69,7 @@ function repo(patch: Partial<RepoView> = {}): RepoView {
     mission: 'Build the thing',
     summary: 'A web app',
     qaBrief: 'Test it well',
+    budget: { budgetUsd: 0, spentUsd: null, pct: null, level: 'none', sessions: 0 },
     localPath: 'C:\\Projects\\r',
     checkoutPath: 'C:\\Projects\\r',
     cloneStatus: 'ready',

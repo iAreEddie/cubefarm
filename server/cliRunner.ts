@@ -1,12 +1,13 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Request, Response } from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { browserProblem, playwrightMcp } from './browser.ts';
 import { HOME_DIR } from './config.ts';
-import { cliLabel, CODEX_HOOK_SOURCE, codexThread, commandFor, hookReviewKey, interruptions, isCli, launchArgs, NOTIFY_SOURCE, OPENCODE_PLUGIN_SOURCE, STATUSLINE_SOURCE, trustKey } from './clis.ts';
+import { cliLabel, CODEX_HOOK_SOURCE, codexConfigToml, codexThread, commandFor, hookReviewKey, interruptions, isCli, launchArgs, lostCodexSession, NOTIFY_SOURCE, OPENCODE_PLUGIN_SOURCE, officeMcpNodePath, officeMcpSource, opencodeUsesAuto, STATUSLINE_SOURCE, trustKey } from './clis.ts';
 import { adoptPty, discardPty, hooksReady, keeperHookUrl, keeperPid, leaveKeeper, spawnPty, startKeeper, terminalsAvailable, type Pty } from './ptyClient.ts';
 import {
   clip,
@@ -99,7 +100,11 @@ export async function handleMcp(token: string, req: Request, res: Response) {
 
 let helpersWritten = false;
 
-/** The status line, notify and plugin scripts the CLIs run. Rewritten once per office start, so updates reach them. */
+/**
+ * The status line, notify and plugin scripts the CLIs run, and the MCP bridge. Written once per office start, so updates
+ * reach them. The bridge is plain CommonJS that needs the MCP SDK itself, so it lives beside the package's own
+ * node_modules: fine where the office runs from its folder (a checkout or one npm install), which is how it's run.
+ */
 function writeHelpers() {
   if (helpersWritten) return;
   fs.mkdirSync(BIN_DIR, { recursive: true });
@@ -107,6 +112,7 @@ function writeHelpers() {
   fs.writeFileSync(path.join(BIN_DIR, 'notify.cjs'), NOTIFY_SOURCE);
   fs.writeFileSync(path.join(BIN_DIR, 'codex-hook.cjs'), CODEX_HOOK_SOURCE);
   fs.writeFileSync(path.join(BIN_DIR, 'opencode-plugin.mjs'), OPENCODE_PLUGIN_SOURCE);
+  fs.writeFileSync(path.join(BIN_DIR, 'office-mcp.cjs'), officeMcpSource(officeMcpNodePath()));
   helpersWritten = true;
 }
 
@@ -203,6 +209,19 @@ function endLive(live: LiveCli): Promise<void> {
   fs.rm(live.dir, { recursive: true, force: true, maxRetries: 5 }, () => undefined);
   if (live.cli === 'codex' && live.resumeId) void codexThread('archive', live.resumeId, gone);
   return gone;
+}
+
+/**
+ * Whether an agent's CLI is really still running. A terminal with no live process is a session that ended without the
+ * office being told: the keeper stops every CLI it holds after it has had no office for ORPHAN_MS (10 min), so an office
+ * that comes back after that is looking at terminals whose processes are already gone, and nothing reports it. Without
+ * this, such an agent stays "working" on its task forever and the work is stranded until the watchdog's far slower
+ * silence check. A terminal the office never started a CLI in (null) is not a dead session.
+ */
+export function cliAlive(term: AgentTerminal): boolean | null {
+  const live = lives.get(term);
+  if (!live) return null;
+  return live.proc !== null;
 }
 
 /** What the keeper holds with a CLI's terminal, so the office can pick it up again after a restart. */
@@ -575,6 +594,14 @@ export function startCliSession(opts: SessionOptions, callbacks: SessionCallback
       finish({ ok: false, text: '', errors: [`${label} couldn't find the conversation it was resuming, so the next session starts a new one.`] });
       return;
     }
+    // Codex keeps its sessions inside CODEX_HOME, so a session the office remembers may not be there — after the
+    // office moved it to a home of its own (the one that carries the office's MCP tools), for instance. Codex says so
+    // on the screen; forgetting the id makes the next session a fresh one instead of failing the same way for ever.
+    if (cli === 'codex' && opts.resumeSessionId && !begun && lostCodexSession(term.screen())) {
+      cb.sessionId(null);
+      finish({ ok: false, text: '', errors: [`${label} couldn't find the conversation it was resuming, so the next session starts a new one.`] });
+      return;
+    }
     const ok = exitCode === 0 && (lastText !== '' || (cli !== 'claude' && Date.now() - started > 20_000));
     finish({ ok, text: lastText, errors: ok ? [] : [`${label} exited${exitCode ? ` with code ${exitCode}` : ''} before finishing.`] });
   };
@@ -637,6 +664,7 @@ export function startCliSession(opts: SessionOptions, callbacks: SessionCallback
     prompt += `\n\nWhen you are done, end your final message with your report as one JSON object in a \`\`\`json block, matching this JSON schema:\n${JSON.stringify(opts.outputSchema)}`;
   }
   let files: { settings: string; mcp: string | null; system: string };
+  let codexHome: string | null = null; // written below, for a Codex session that needs the office's tools
   try {
     writeHelpers();
     fs.mkdirSync(dir, { recursive: true });
@@ -651,6 +679,23 @@ export function startCliSession(opts: SessionOptions, callbacks: SessionCallback
     fs.writeFileSync(files.settings, JSON.stringify(settings, null, 2));
     if (files.mcp) fs.writeFileSync(files.mcp, JSON.stringify({ mcpServers: servers }, null, 2));
     fs.writeFileSync(files.system, opts.systemAppend);
+    // Codex reads its MCP servers from a config file, never from `-c` (see codexConfigToml), so a Codex session that
+    // needs the office's tools gets a CODEX_HOME of its own. It lives beside the terminals, NOT in the session folder:
+    // that folder is deleted when the CLI ends (see the release path), which would take the config with it. Keeping it
+    // also means Codex's own sessions stay where the office remembers their ids. The manager's own Codex config is left
+    // alone; a copy of their login keeps the session signed in, since CODEX_HOME decides where that login is looked for.
+    if (cli === 'codex' && opts.office) {
+      const home = path.join(HOME_DIR, 'codex', opts.agentId || 'session');
+      fs.mkdirSync(home, { recursive: true });
+      fs.writeFileSync(path.join(home, 'config.toml'), codexConfigToml({ command: process.execPath, args: [path.join(BIN_DIR, 'office-mcp.cjs'), `${officeUrl}/api/mcp/${token}`] }));
+      const real = path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'auth.json');
+      try {
+        fs.copyFileSync(real, path.join(home, 'auth.json'), fs.constants.COPYFILE_EXCL);
+      } catch {
+        // Already copied, or no login file to copy: Codex says so itself if it needs one.
+      }
+      codexHome = home;
+    }
     if (prompt.length > INLINE_PROMPT_MAX) {
       const file = path.join(dir, 'task.md');
       fs.writeFileSync(file, prompt);
@@ -678,6 +723,16 @@ export function startCliSession(opts: SessionOptions, callbacks: SessionCallback
     codexHook: path.join(BIN_DIR, 'codex-hook.cjs'),
     plugin: pathToFileURL(path.join(BIN_DIR, 'opencode-plugin.mjs')).href,
     browser,
+    // The CEO's tools for a CLI that starts its own MCP servers; Claude Code has them from the office already (files.mcp).
+    // nodePath: the bridge runs from the office's folder, outside cubefarm, so it is told where the SDK lives.
+    office:
+      opts.office && cli !== 'claude'
+        ? { command: process.execPath, args: [path.join(BIN_DIR, 'office-mcp.cjs'), `${officeUrl}/api/mcp/${token}`], nodePath: officeMcpNodePath() }
+        : null,
+    // OpenCode's two lines disagree on the flag that auto-approves permissions; ask the CLI the office is about to run.
+    opencodeAuto: cli === 'opencode' ? opencodeUsesAuto(cmd.file) : false,
+    // Codex's own CODEX_HOME for this session, when it was given the office's tools.
+    ...(codexHome ? { codexHome } : {}),
   });
 
   // Each agent must be a clean instance on the account its CLI is logged into: no API keys (they would switch Claude

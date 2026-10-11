@@ -1,8 +1,9 @@
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { run } from './exec.ts';
-import type { AgentCli, CliView, EffortLevel } from '../shared/types.ts';
+import type { AgentCli, AgentRole, CliView, EffortLevel } from '../shared/types.ts';
 
 // The coding-agent CLIs an agent can run in its terminal, how to find them on this machine, and how to start one on
 // a task. Claude Code is fully wired in: its hooks report every tool call to the office.
@@ -49,16 +50,38 @@ export function resolveCommand(name: string, env: NodeJS.ProcessEnv = process.en
 }
 
 /**
+ * A shim that runs one program by an absolute path, which is what a CLI's own Windows installer writes (Codex's does),
+ * as opposed to npm's `node "%dp0%\…"`. The program is quoted, so: the first quoted absolute path, then whatever
+ * arguments follow it. null when the line doesn't look like that at all.
+ */
+function unwrapAbsoluteShim(line: string): { file: string; args: string[] } | null {
+  const program = line.match(/"([A-Za-z]:\\[^"]+\.(?:exe|cmd|bat|com|js))"/i);
+  if (!program) return null;
+  // Everything after the path: the shim's own fixed arguments, minus cmd's %*/%1 placeholders, which only forward ours.
+  const args = line
+    .slice(program.index! + program[0].length)
+    .trim()
+    .split(/\s+/)
+    .filter((a) => a && !/^%\*?$|^%\d$/.test(a));
+  return { file: program[1], args };
+}
+
+/**
  * npm installs Windows CLIs as .cmd shims. Running one puts every argument through cmd.exe, which expands %VARS% and
- * trips over quotes in a prompt, so run what the shim runs instead: the package's .exe, or node on its script.
+ * breaks on a multi-line argument: cmd.exe hands the CLI only the first line, so a prompt whose text starts on its
+ * second line arrives empty. Run what the shim runs instead — the program it points at.
+ *
+ * Both shapes are handled: npm's `node "%dp0%\…\cli.js"`, and the absolute path a CLI's own installer writes.
  */
 export function unwrapCmdShim(shimPath: string, text: string): { file: string; args: string[] } | null {
-  const line = text.split(/\r?\n/).find((l) => /%\*\s*$/.test(l));
-  if (!line) return null;
   const dir = path.dirname(shimPath);
+  // The command line, not the `@echo off` preamble: it is the line that forwards its arguments (%*).
+  const line = text.split(/\r?\n/).find((l) => /[^%]%\*\s*$/.test(l.trim()) && !l.trim().startsWith('@'));
+  if (!line) return null;
   const targets = [...line.matchAll(/"%dp0%\\([^"]+)"/g)].map((m) => path.join(dir, m[1]));
   const target = targets[targets.length - 1];
-  if (!target) return null;
+  // A program run by its absolute path: the installer's own shim.
+  if (!target) return unwrapAbsoluteShim(line);
   if (/\.exe$/i.test(target)) return { file: target, args: [] };
   if (!/\.[cm]?js$/i.test(target)) return null;
   const between = line.slice(line.indexOf('"%_prog%"') + '"%_prog%"'.length, line.lastIndexOf(`"%dp0%\\`));
@@ -117,13 +140,61 @@ export function commandFor(id: AgentCli): { file: string; args: string[] } | nul
   return { file: found, args: [] };
 }
 
-/** Which CLIs this machine has, with their versions. */
+// ---------- OpenCode: two command lines ----------
+
+/**
+ * Whether this OpenCode is the 2.x line. Two things changed between it and 1.x that the office has to get right: the
+ * bare command became the interactive TUI (the message-taking form is the `run` subcommand), and the flag that
+ * auto-approves permissions went from `--dangerously-skip-permissions` to `--auto`. A machine can have both — a WinGet
+ * 1.x build and an npm 2.x one — and PATH decides which the office finds, so it asks this one.
+ */
+let opencodeAuto: boolean | undefined;
+
+/** The major version in what an OpenCode prints for `--version`: 'opencode v2.0.26' and '1.4.10' alike. */
+export function opencodeMajor(printed: string): number | null {
+  const major = printed.match(/v?(\d+)\.\d+\.\d+/)?.[1];
+  return major === undefined ? null : Number(major);
+}
+
+/**
+ * Asks one OpenCode binary which line it is: `--version` only, so nothing is spent on a model. Unreadable, missing or
+ * silent counts as 1.x, whose flag exists in both lines.
+ */
+export function opencodeUsesAuto(file: string): boolean {
+  if (opencodeAuto !== undefined) return opencodeAuto;
+  opencodeAuto = false;
+  try {
+    const out = spawnSync(file, ['--version'], { encoding: 'utf8', timeout: 20_000, windowsHide: true });
+    const major = opencodeMajor(`${out.stdout ?? ''}${out.stderr ?? ''}`);
+    if (major !== null) opencodeAuto = major >= 2;
+  } catch {
+    // Keep the conservative answer.
+  }
+  return opencodeAuto;
+}
+
+/**
+ * The models OpenCode says it can run: its own `models` subcommand, which lists the providers it is signed in to and
+ * contacts them, so it is given a longer timeout and any failure is just an empty list. Only OpenCode can be asked:
+ * Claude Code's models are the ones the office ships, and Codex validates `--model` itself (shared/models.ts).
+ */
+export function parseOpencodeModels(printed: string): string[] {
+  return [...new Set(
+    printed
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter((l) => /^[\w.-]+\/[\w.:#-]+$/.test(l)),
+  )].slice(0, 60);
+}
+
+/** Which CLIs this machine has, with their versions and, where the CLI can say, the models it can run. */
 export async function detectClis(): Promise<CliView[]> {
   return Promise.all(
     CLIS.map(async (c) => {
       const cmd = commandFor(c.id);
       const version = cmd ? await run(cmd.file, [...cmd.args, '--version'], { timeoutMs: 20_000 }).catch(() => null) : null;
-      return { id: c.id, label: c.label, installed: !!cmd, version: version?.split(/\r?\n/)[0].trim().slice(0, 60) || null, integrated: c.integrated };
+      const models = cmd && c.id === 'opencode' ? parseOpencodeModels(await run(cmd.file, [...cmd.args, 'models'], { timeoutMs: 60_000 }).catch(() => '')) : [];
+      return { id: c.id, label: c.label, installed: !!cmd, version: version?.split(/\r?\n/)[0].trim().slice(0, 60) || null, integrated: c.integrated, models };
     }),
   );
 }
@@ -149,6 +220,21 @@ export interface LaunchContext {
   plugin: string; // file URL of the OpenCode plugin
   /** The Playwright MCP server, when the floor tests in a browser. Claude Code gets it through its MCP config file. */
   browser: { command: string; args: string[] } | null;
+  /**
+   * The office MCP server (the CEO's tools), for the CLIs that start their own: the bridge script, the office URL it
+   * dials and its environment. Claude Code gets the same tools from the office over its own MCP config file.
+   */
+  office: OfficeMcp | null;
+  /**
+   * OpenCode only: this install auto-approves permissions with --auto (2.x) rather than --dangerously-skip-permissions
+   * (1.x). Left out in tests and by any other caller: the flag that exists in both lines.
+   */
+  opencodeAuto?: boolean;
+  /**
+   * Codex only: the session's own CODEX_HOME, holding the config.toml that gives it the office's MCP tools. Codex
+   * cannot be handed an MCP server through `-c` (see codexConfigToml), so it reads this folder instead.
+   */
+  codexHome?: string;
 }
 
 export interface Launch {
@@ -157,6 +243,72 @@ export interface Launch {
 }
 
 const EFFORT_CODEX: Record<EffortLevel, string> = { low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'xhigh' };
+
+/** The office MCP server as a CLI starts it: the bridge script, the office URL it dials, and the environment it needs. */
+export interface OfficeMcp {
+  command: string;
+  args: string[];
+  /**
+   * The SDK the bridge itself needs. It runs from the office's own folder, outside cubefarm, so `require` from there
+   * would not find cubefarm's node_modules: the office says where they are. '' when they can't be worked out.
+   */
+  nodePath: string;
+}
+
+/** The node_modules cubefarm's own dependencies are in, as the bridge (which sits elsewhere) should look them up. */
+export function officeMcpNodePath(resolve: (id: string) => string = (id) => createRequire(import.meta.url).resolve(id)): string {
+  try {
+    const pkg = resolve('@modelcontextprotocol/sdk/package.json');
+    // Either separator, rather than path.sep: tests on one platform describe paths of the other.
+    const rest = pkg.replaceAll('\\', '/');
+    const at = rest.lastIndexOf('/node_modules/');
+    return at < 0 ? '' : pkg.slice(0, at) + pkg.slice(at, at + '/node_modules'.length);
+  } catch {
+    return '';
+  }
+}
+
+/** What an MCP server the office launches needs in its environment: where to find the SDK, when that is known. */
+export function officeMcpEnv(nodePath: string): Record<string, string> {
+  return nodePath ? { NODE_PATH: nodePath } : {};
+}
+
+/**
+ * Codex saying it cannot find the session it was asked to resume, which exits it. Codex keeps sessions inside its own
+ * CODEX_HOME, so one the office remembers may simply not be there any more — the office forgets the id and lets the
+ * next session start fresh, rather than failing the same way on every job.
+ */
+export function lostCodexSession(screen: string): boolean {
+  return /No saved session found with ID/i.test(screen);
+}
+
+/**
+ * The config.toml that gives a Codex session the office's MCP tools.
+ *
+ * Codex cannot be told about an MCP server on the command line: a `-c` value is parsed as TOML, and every table-shaped
+ * value arrives as a string ("invalid type: string …, expected struct RawMcpServerConfig"), which fails the whole
+ * bootstrap config and leaves the session with no MCP servers at all. So a per-session CODEX_HOME carries it instead,
+ * which also keeps the manager's own Codex config untouched.
+ *
+ * JSON.stringify doubles backslashes, which is exactly what a TOML basic string wants for a Windows path.
+ */
+export function codexConfigToml(office: { command: string; args: string[] }): string {
+  return `[mcp_servers.office]\ncommand = ${JSON.stringify(office.command)}\nargs = [${office.args.map((a) => JSON.stringify(a)).join(', ')}]\n`;
+}
+
+/**
+ * OpenCode's permissions. An agent can't stop to ask (the office runs it with --auto), so everything is allowed; the
+ * CEO is the exception: it reads repositories and acts through the office's tools, and never runs commands or edits
+ * files. OpenCode still enforces an explicit "deny" under --auto, so that holds whatever the model decides to try.
+ */
+export function opencodePermission(role: AgentRole): Record<string, string> {
+  return role === 'ceo' ? { bash: 'deny', edit: 'deny', webfetch: 'deny', websearch: 'deny' } : { edit: 'allow', bash: 'allow', webfetch: 'allow' };
+}
+
+/** The CEO's own tools, and only the CEO's: no worker ever reaches the office's issue-and-team tools. */
+function ceoOffice(ctx: LaunchContext): ctx is LaunchContext & { office: OfficeMcp } {
+  return ctx.role === 'ceo' && !!ctx.office;
+}
 
 /** Codex hooks the office listens to: its steps, and Esc interrupting a turn. Turn endings come from notify. */
 export const CODEX_HOOK_EVENTS = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Interrupt'];
@@ -207,37 +359,67 @@ export function launchArgs(id: AgentCli, ctx: LaunchContext): Launch {
     }
     case 'codex': {
       const toml = (s: string) => JSON.stringify(s); // a JSON string is a valid TOML basic string
+      // A -c value is parsed as TOML, so an inline table uses `key=value`, never JSON's `"key":value`: with a colon
+      // Codex fails the whole config ("invalid type: string …, expected struct RawMcpServerConfig") and the session
+      // starts with no MCP servers at all — the CEO had no office tools and could not see a floor.
+      const table = (o: Record<string, unknown>) => `{${Object.entries(o).map(([k, v]) => `${k}=${Array.isArray(v) ? `[${v.map(toml).join(',')}]` : toml(String(v))}`).join(',')}}`;
       const args = [
         '--no-alt-screen',
+        // Without this, an install whose CLI package doesn't match its executable refuses to start at all: "Error: the
+        // CLI package does not match this platform or executable. To work without the background server, rerun the
+        // same command with --no-daemon." The office runs one session per agent in its own pty, so it wants no daemon
+        // anyway — and a session that dies at startup takes the whole prompt with it (the CEO got an empty message).
+        '--no-daemon',
         '-c',
         `notify=[${[process.execPath, ctx.notify.script, ctx.notify.url].map(toml).join(',')}]`,
         '-c',
         `developer_instructions=${toml(ctx.systemAppend)}`,
         ...(ctx.model ? ['-m', ctx.model] : []),
         ...(ctx.effort ? ['-c', `model_reasoning_effort=${toml(EFFORT_CODEX[ctx.effort])}`] : []),
-        ...(ctx.browser ? ['-c', `mcp_servers.playwright={command=${toml(ctx.browser.command)},args=[${ctx.browser.args.map(toml).join(',')}]}`] : []),
+        ...(ctx.browser ? ['-c', `mcp_servers.playwright=${table({ command: ctx.browser.command, args: ctx.browser.args })}`] : []),
+        // The office's tools come from the session's CODEX_HOME (codexConfigToml), not from here: -c cannot express
+        // an MCP server table, so this line is deliberately absent. See officeMcpEnv for NODE_PATH.
         ...CODEX_HOOK_EVENTS.flatMap((e) => ['-c', `hooks.${e}=[{hooks=[{type="command",command=${toml(codexHookCommand(process.execPath, ctx.codexHook))},timeout=10}]}]`]),
         // Like the manager's own Codex, but it can't stop to ask: no approvals and no sandbox (its sandbox can't reach
         // the credential store, so git and gh fail in it).
         '--dangerously-bypass-approvals-and-sandbox',
       ];
-      return { args: ctx.resumeId ? ['resume', ...args, ctx.resumeId, ctx.prompt] : [...args, '--', ctx.prompt], env: { CUBEFARM_HOOK_URL: ctx.notify.url } };
+      // `resume` takes its own flags the same way, with the session id and then the prompt.
+      // NODE_PATH: Codex inherits the office's environment, and its MCP subprocesses inherit Codex's, so this is how
+      // the office tools bridge (officeMcpSource) finds the SDK it needs from outside cubefarm. OpenCode gets the same
+      // value through its own config's `environment`.
+      const env: Record<string, string> = {
+        CUBEFARM_HOOK_URL: ctx.notify.url,
+        ...(ctx.codexHome ? { CODEX_HOME: ctx.codexHome } : {}),
+        ...(ceoOffice(ctx) ? officeMcpEnv(ctx.office.nodePath) : {}),
+      };
+      return { args: ctx.resumeId ? ['resume', ...args, ctx.resumeId, ctx.prompt] : [...args, '--', ctx.prompt], env };
     }
     case 'opencode': {
+      // The manager's own config is replaced wholesale (OPENCODE_CONFIG_CONTENT), so every server it should have is
+      // listed here; the office's 'office' server wins over one of the same name in their config.
+      const mcp: Record<string, unknown> = {};
+      if (ctx.browser) mcp.playwright = { type: 'local', command: [ctx.browser.command, ...ctx.browser.args], enabled: true };
+      if (ceoOffice(ctx)) mcp.office = { type: 'local', command: [ctx.office.command, ...ctx.office.args], enabled: true, environment: officeMcpEnv(ctx.office.nodePath) };
       const config = {
         plugin: [ctx.plugin],
         instructions: [ctx.files.system],
         autoupdate: false, // several agents starting at once must not each reinstall it
-        permission: { edit: 'allow', bash: 'allow', webfetch: 'allow' }, // it can't stop to ask either
-        ...(ctx.browser ? { mcp: { playwright: { type: 'local', command: [ctx.browser.command, ...ctx.browser.args], enabled: true } } } : {}),
+        permission: opencodePermission(ctx.role),
+        ...(Object.keys(mcp).length ? { mcp } : {}),
       };
+      // `run` takes the message and exits at the end of the turn, which is what the office wants from every session.
+      // The bare form is OpenCode's interactive TUI: it takes neither a message nor the model flag the office sends,
+      // and answers with its help text. `run` and the positional message are the same in 1.x and 2.x; only the flag
+      // that auto-approves permissions differs (2.x --auto, 1.x --dangerously-skip-permissions), so the office asks
+      // the CLI it found which line it is and sends that one — it also hands the office the CEO's MCP tools unasked.
       // No project argument: it starts in its terminal's folder, and a desk path in its command line would make the
       // desk clean-up take it for a leftover.
       const args = [
-        '--auto',
+        'run',
         ...(ctx.model ? ['--model', ctx.model] : []),
         ...(ctx.resumeId ? ['--session', ctx.resumeId] : []),
-        '--prompt',
+        ctx.opencodeAuto ? '--auto' : '--dangerously-skip-permissions',
         ctx.prompt,
       ];
       return { args, env: { OPENCODE_CONFIG_CONTENT: JSON.stringify(config), CUBEFARM_NOTIFY_URL: ctx.notify.url } };
@@ -397,3 +579,54 @@ export default async function CubefarmPlugin({ client } = {}) {
   };
 }
 `;
+
+/**
+ * The office's MCP tools for the CLIs that start their own MCP servers (Codex, OpenCode): a small stdio MCP server that
+ * forwards every request to the office's HTTP endpoint, whose URL carries the session's token. Claude Code reaches the
+ * same tools directly through the office's own MCP server, so the CEO's tools are identical whichever it runs.
+ * Deployed as: node office-mcp.cjs <office mcp url>
+ */
+export const OFFICE_MCP_SOURCE = String.raw`// cubefarm: the office's tools (mcp__office__*) for a CLI that starts its own MCP servers.
+// This file is deployed OUTSIDE cubefarm (the office's bin folder), so it cannot resolve the MCP SDK by walking up from
+// itself, and it cannot rely on NODE_PATH either: Codex spawns its MCP servers with an environment of its own, without
+// what the office set for the session — measured, not assumed. The SDK's folder is written into the file instead.
+const SDK_DIR = '__SDK_DIR__';
+if (SDK_DIR) module.paths.unshift(SDK_DIR);
+const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
+const { StreamableHTTPClientTransport } = require('@modelcontextprotocol/sdk/client/streamableHttp.js');
+const { Server } = require('@modelcontextprotocol/sdk/server/index.js');
+const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
+const { CallToolRequestSchema, ListToolsRequestSchema } = require('@modelcontextprotocol/sdk/types.js');
+
+async function main() {
+  const url = process.argv[2];
+  if (!url) throw new Error('the office URL is missing');
+  const office = new Client({ name: 'cubefarm-office', version: '1.0.0' }, { capabilities: {} });
+  try {
+    await office.connect(new StreamableHTTPClientTransport(new URL(url)));
+  } catch (err) {
+    throw new Error("the office isn't reachable at " + url.split('/api/')[0] + ' (' + (err && err.message ? err.message : err) + ')');
+  }
+  // The office's own tool list, passed through: no second copy of the schemas to drift out of date.
+  const bridge = new Server({ name: 'office', version: '1.0.0' }, { capabilities: { tools: {} } });
+  bridge.setRequestHandler(ListToolsRequestSchema, () => office.listTools());
+  bridge.setRequestHandler(CallToolRequestSchema, (req) => office.callTool(req.params));
+  bridge.onerror = () => {};
+  await bridge.connect(new StdioServerTransport());
+}
+
+main().catch((err) => {
+  // stderr is the agent's terminal; stdout is the protocol and must stay clean.
+  process.stderr.write('cubefarm: the office tools are not available: ' + (err && err.message ? err.message : err) + '\n');
+  process.exit(1);
+});
+`;
+
+/**
+ * The bridge as it is deployed: the same source with the SDK's folder filled in. Without it the bridge starts, cannot
+ * require the SDK, and exits — leaving a CEO that answers but has no office tools at all.
+ */
+export function officeMcpSource(sdkDir: string, source = OFFICE_MCP_SOURCE): string {
+  // A JSON string is a safe JS string literal; only the one placeholder is replaced.
+  return source.replace("'__SDK_DIR__'", JSON.stringify(sdkDir));
+}

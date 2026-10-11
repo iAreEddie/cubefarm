@@ -70,29 +70,63 @@ describe('pickTester', () => {
   const ada = { id: 'ada', desk: 0 };
   const linus = { id: 'linus', desk: 1 };
   const grace = { id: 'grace', desk: 2 };
+  // No pairing to differ from: everyone ranks the same, as before #8.
+  const noPairing = () => ({ cli: 'claude' as const, model: 'claude-sonnet-5' });
 
   it("picks anyone but the PR's author, by desk", () => {
-    expect(pickTester([ada, linus, grace], 'ada', new Set(), true, 0)).toBe(linus);
-    expect(pickTester([grace, linus], null, new Set(), true, 0)).toBe(linus);
+    expect(pickTester([ada, linus, grace], 'ada', noPairing, null, new Set(), true, 0)).toBe(linus);
+    expect(pickTester([grace, linus], null, noPairing, null, new Set(), true, 0)).toBe(linus);
   });
 
   it('keeps agents whose failed PRs wait for them for last', () => {
-    expect(pickTester([ada, linus, grace], 'ada', new Set(['linus']), true, 0)).toBe(grace);
-    expect(pickTester([ada, linus], 'ada', new Set(['linus']), true, 0)).toBe(linus);
+    expect(pickTester([ada, linus, grace], 'ada', noPairing, null, new Set(['linus']), true, 0)).toBe(grace);
+    expect(pickTester([ada, linus], 'ada', noPairing, null, new Set(['linus']), true, 0)).toBe(linus);
   });
 
   it('leaves the PR for someone else to come free, rather than have its author test it', () => {
     // Agents finishing one by one: each PR's author is the only one free when it enters QA (as seen in the demo).
-    expect(pickTester([ada], 'ada', new Set(), true, 0)).toBeNull();
-    expect(pickTester([ada], 'ada', new Set(), true, SELF_QA_WAIT_MS - 1)).toBeNull();
+    expect(pickTester([ada], 'ada', noPairing, null, new Set(), true, 0)).toBeNull();
+    expect(pickTester([ada], 'ada', noPairing, null, new Set(), true, SELF_QA_WAIT_MS - 1)).toBeNull();
   });
 
   it('lets the author test it when nobody else can, or nobody else came free for a while', () => {
-    expect(pickTester([ada], 'ada', new Set(), false, 0)).toBe(ada); // a one-agent floor never stalls
-    expect(pickTester([ada], 'ada', new Set(), true, SELF_QA_WAIT_MS)).toBe(ada);
+    expect(pickTester([ada], 'ada', noPairing, null, new Set(), false, 0)).toBe(ada); // a one-agent floor never stalls
+    expect(pickTester([ada], 'ada', noPairing, null, new Set(), true, SELF_QA_WAIT_MS)).toBe(ada);
   });
 
   it('has nobody to pick from an empty floor', () => {
-    expect(pickTester([], 'ada', new Set(), false, SELF_QA_WAIT_MS)).toBeNull();
+    expect(pickTester([], 'ada', noPairing, null, new Set(), false, SELF_QA_WAIT_MS)).toBeNull();
+  });
+
+  describe('with resolved coding agents and models (#8)', () => {
+    const deepseek = { id: 'deepseek', desk: 0 };
+    const claude = { id: 'claude', desk: 1 };
+    const claudePro = { id: 'claude-pro', desk: 2 };
+    const pairing: Record<string, { cli: 'claude' | 'opencode' | 'codex'; model: string }> = {
+      deepseek: { cli: 'opencode', model: '' },
+      claude: { cli: 'claude', model: 'claude-sonnet-5' },
+      'claude-pro': { cli: 'claude', model: 'claude-opus-5' },
+    };
+
+    it("prefers a tester whose coding agent differs from the author's, before desk order", () => {
+      // The DeepSeek (OpenCode) agent's PR is checked by the Claude agent, not the lower-desk OpenCode teammate.
+      expect(pickTester([deepseek, claude], 'deepseek', (a) => pairing[a.id], pairing.deepseek, new Set(), true, 0)).toBe(claude);
+    });
+
+    it("then prefers a different model when the coding agent is the same", () => {
+      // Only Claude agents are free: the one on a different model tests it.
+      expect(pickTester([claudePro, claude], 'claude', (a) => pairing[a.id], pairing.claude, new Set(), true, 0)).toBe(claudePro);
+    });
+
+    it('falls back to the same pairing when nothing differs, never the author', () => {
+      const another = { id: 'deepseek-2', desk: 5 };
+      const same: Record<string, { cli: 'claude' | 'opencode' | 'codex'; model: string }> = { ...pairing, 'deepseek-2': { cli: 'opencode', model: '' } };
+      // Only a same-pairing teammate is free: they test it rather than the author.
+      expect(pickTester([deepseek, another], 'deepseek', (a) => same[a.id], same.deepseek, new Set(), true, 0)).toBe(another);
+    });
+
+    it('still never picks the PR author, even when their coding agent differs from everyone', () => {
+      expect(pickTester([claude, deepseek], 'deepseek', (a) => pairing[a.id], pairing.deepseek, new Set(), false, 0)).toBe(claude);
+    });
   });
 });

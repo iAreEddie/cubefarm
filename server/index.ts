@@ -250,6 +250,8 @@ app.post('/api/office/update', route((req) => swarm.updateOffice(req.body?.actio
 // Claude's usage: resume full speed after a usage warning; in the demo, a warning or the limit on demand
 app.post('/api/usage/resume', route(() => swarm.resumeFullSpeed()));
 app.post('/api/usage/simulate', route((req) => swarm.simulateUsage(req.body?.kind)));
+// Floor budgets (#7): in the demo, put a floor's spend at a budget line on demand
+app.post('/api/repos/:repo/budget/simulate', route((req) => swarm.simulateBudget(repoId(req), req.body?.kind)));
 // The office doctor (#262): a finding's one-click fix or Ignore; in the demo, its scenarios
 app.post('/api/doctor/fix', route((req) => swarm.doctorFix(req.body?.id, req.body?.fix)));
 app.post('/api/doctor/ignore', route((req) => swarm.doctorIgnore(req.body?.id)));

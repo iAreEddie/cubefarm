@@ -21,6 +21,7 @@ import { shade, toon } from './materials';
 import { deskMug, subscribeMugs } from './people';
 import { MUG_SIZE, MugLook, mugColor } from './toys/mugLook';
 import { useKeyName } from '../ui/controls';
+import { resolveCli } from '../../../shared/cli';
 
 const SCREEN = { w: 1.0, h: 0.6, px: 896, py: 538 };
 const WOOD = '#f1d19b';
@@ -86,7 +87,7 @@ function useTerminalTexture(agent: Agent, anchor: React.RefObject<THREE.Object3D
     const recentShot = a.screenshotAt != null && Date.now() - a.screenshotAt < 120_000;
     const showBrowser = a.hasScreenshot && a.status !== 'idle' && (a.currentTool?.startsWith('mcp__playwright') || recentShot || a.status === 'done');
     const s = useStore.getState().settings;
-    const program = a.role !== 'ceo' && s.runtime === 'terminal' ? a.cli || s.defaultCli : 'claude';
+    const program = resolveCli(a, s);
     const img = shot.current;
     painted.paint((ctx) => drawTerminal(ctx, SCREEN.px, SCREEN.py, a, logs, img, !!showBrowser, now, program));
   });

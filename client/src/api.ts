@@ -74,6 +74,7 @@ export const api = {
       mission?: string;
       summary?: string;
       qaBrief?: string;
+      budgetUsd?: number;
       previewCommand?: string | null;
       previewEnv?: Record<string, string>;
     },
@@ -120,6 +121,8 @@ export const api = {
   resumeFullSpeed: () => call<UsageView>('POST', '/api/usage/resume'),
   /** The demo only: a usage warning, or the limit, as if a session had reported it. */
   simulateUsage: (kind: 'warning' | 'limit') => call<UsageView>('POST', '/api/usage/simulate', { kind }),
+  /** The demo only: put a floor's reported spend at 85% or 105% of its budget, or reset it. */
+  simulateBudget: (repoId: string, kind: 'warning' | 'over' | 'reset') => call<RepoView>('POST', `${r(repoId)}/budget/simulate`, { kind }),
   /** The office doctor: a finding's one-click fix, or Ignore. */
   doctorFix: (id: string, fix: DoctorFix) => call<DoctorFinding[]>('POST', '/api/doctor/fix', { id, fix }),
   doctorIgnore: (id: string) => call<DoctorFinding[]>('POST', '/api/doctor/ignore', { id }),
