@@ -78,6 +78,8 @@ function frameSnapshot(f: JournalFrame): WorldSnapshot {
     voiceCache: s.voiceCache,
     notifyChannels: s.notifyChannels,
     ticker: f.ticker ?? [],
+    managers: s.managers, // the floor managers are live-only, like their inbox
+    managerInbox: s.managerInbox,
     prPreviews: [], // the PR theatre is live-only: off while replaying
     progress: s.progress, // coins and decorations are the office's own, now
     pong: s.pong, // so are the ping-pong leaderboards

@@ -102,6 +102,8 @@ app.post(
   ),
 );
 app.patch('/api/repos/:repo', route((req) => swarm.updateRepo(repoId(req), req.body ?? {})));
+// The floor manager (#18): enable/disable and its setup
+app.patch('/api/repos/:repo/manager', route((req) => swarm.setManager(repoId(req), req.body ?? {})));
 app.delete('/api/repos/:repo', route((req) => swarm.disconnectRepo(repoId(req))));
 app.post('/api/repos/:repo/sync', route((req) => swarm.syncRepo(repoId(req))));
 app.post('/api/repos/:repo/sync-folder', route((req) => swarm.syncFolderNow(repoId(req))));

@@ -144,8 +144,11 @@ export interface ProjectFolderView {
   floor: number | null; // already a floor in the office
 }
 
-/** Every agent on a floor is the same kind of worker (docs/agents.md); the one CEO works in the lobby and runs the company. */
-export type AgentRole = 'agent' | 'ceo';
+/**
+ * Every agent on a floor is the same kind of worker (docs/agents.md); the one CEO works in the lobby and runs the
+ * company. The floor manager (#18) is a separate supervisor: it never builds or tests, so it is never free capacity.
+ */
+export type AgentRole = 'agent' | 'ceo' | 'manager';
 
 /** Desks in a floor's room: 12 in the open-plan grid and 3 along the east wall. A team is at most this big. */
 export const FLOOR_SEATS = 15;
@@ -543,7 +546,7 @@ export interface PhoneMessage {
   voice?: Exclude<VoiceProvider, 'off'>; // who read it aloud when it arrived (absent: nobody), for the phone's ▶ replay
 }
 
-export type CeoJobKind = 'onboard' | 'plan' | 'review' | 'chat' | 'triage';
+export type CeoJobKind = 'onboard' | 'plan' | 'review' | 'chat' | 'triage' | 'reports';
 
 export interface CeoInfo {
   queue: { kind: CeoJobKind; label: string }[]; // jobs waiting for the CEO
@@ -563,6 +566,71 @@ export interface PongRow {
   lastAt: number; // epoch ms of their last game
 }
 
+// ---------- the AI floor manager (#18) ----------
+
+/**
+ * A floor manager's supervisor state, shown in the floor UI and the phone. healthy: nothing needs attention ·
+ * quiet: no fresh telemetry (not proof of a problem) · stalled: an unresolved incident · recovered: just cleared one ·
+ * deferred: a check was skipped (busy/full/limited/draining) · failed: its last assessment failed · disabled.
+ */
+export type ManagerHealth = 'healthy' | 'quiet' | 'stalled' | 'recovered' | 'deferred' | 'failed' | 'disabled';
+
+/** What a floor manager reported to the CEO (a material event, or the hourly summary). */
+export interface ManagerReportView {
+  id: string;
+  repoId: string;
+  floor: number;
+  kind: 'incident' | 'recovery' | 'completion' | 'bottleneck' | 'decision' | 'hourly';
+  severity: 'info' | 'warn' | 'bad';
+  text: string;
+  evidence: string;
+  action: string; // what the CEO should consider, '' when informational
+  at: number; // first raised
+  updatedAt: number; // last confirmed
+  ackAt: number | null; // the CEO acknowledged it
+}
+
+/** One thing the CEO keeps on its agenda for the next hour (or a stated due time). */
+export interface ManagerAgendaView {
+  id: string;
+  text: string;
+  dueAt: number | null; // when it should be considered (null: at the next hourly review)
+  createdAt: number;
+  createdBy: 'ceo' | 'manager';
+  doneAt: number | null;
+}
+
+/** The report inbox and agenda the CEO reads through its scoped tools; bounded history. */
+export interface ManagerInboxView {
+  reports: ManagerReportView[]; // newest first, bounded
+  agenda: ManagerAgendaView[]; // open items, due first
+  unacked: number;
+}
+
+/** One floor's AI manager: its identity, setup, cadence and last outcome. */
+export interface ManagerView {
+  repoId: string;
+  floor: number;
+  name: string;
+  enabled: boolean;
+  cli: AgentCli | ''; // '' = the office default
+  model: string; // '' = the office default
+  effort: EffortLevel | ''; // '' = the office default (resolved to low for checks)
+  health: ManagerHealth;
+  detail: string | null; // the last failure, deferral or assessment line
+  running: boolean; // a check is in session now
+  lastCheckAt: number | null; // when the last check session started
+  lastSuccessfulAt: number | null; // the last AI assessment that came back
+  nextCheckAt: number | null;
+  lastReportAt: number | null; // the last report it sent the CEO
+  checks: number; // checks started
+  assessments: number; // assessments that came back
+  deferrals: number; // checks skipped while busy/limited/draining
+  continuityPath: string; // the floor's continuity file on disk
+  continuity: string; // its current contents (bounded)
+  latest: { kind: ManagerReportView['kind']; text: string; at: number } | null; // its latest report
+}
+
 export interface WorldSnapshot {
   user: string | null; // gh login
   ghReady: boolean;
@@ -575,6 +643,8 @@ export interface WorldSnapshot {
   qa: QaView[];
   prPreviews: PrPreviewView[];
   requests: HireRequestView[];
+  managers: ManagerView[]; // one AI floor manager per connected repo (#18)
+  managerInbox: ManagerInboxView; // reports and agenda the CEO reads
   ceo: CeoInfo;
   messages: PhoneMessage[];
   phoneReadAt: number; // CEO messages newer than this are unread
@@ -621,6 +691,9 @@ export type ServerEvent =
   | { type: 'prPreviewRemoved'; repoId: string; pr: number }
   | { type: 'settings'; settings: SwarmSettings }
   | { type: 'request'; request: HireRequestView }
+  | { type: 'manager'; manager: ManagerView }
+  | { type: 'managerRemoved'; repoId: string }
+  | { type: 'managerInbox'; inbox: ManagerInboxView }
   | { type: 'ceo'; ceo: CeoInfo }
   | { type: 'message'; message: PhoneMessage }
   | { type: 'phoneRead'; at: number }

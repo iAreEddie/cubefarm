@@ -1,7 +1,7 @@
 import { useStore } from './store';
 import type { PongResult } from '../../shared/pong';
 import type { AgentStyle } from '../../shared/looks';
-import type { AgentCli, AgentPromptView, AgentView, DoctorFinding, DoctorFix, EffortLevel, GhRepoSummary, NotifyChannel, NotifyChannelsView, NotifyWebhook, OfficeUpdateView, PreviewView, ProjectFolderView, PrPreviewView, RepoView, SwarmSettings, TextFileView, UsageView, VoiceCacheView, VoiceOption } from '../../shared/types';
+import type { AgentCli, AgentPromptView, AgentView, DoctorFinding, DoctorFix, EffortLevel, GhRepoSummary, ManagerView, NotifyChannel, NotifyChannelsView, NotifyWebhook, OfficeUpdateView, PreviewView, ProjectFolderView, PrPreviewView, RepoView, SwarmSettings, TextFileView, UsageView, VoiceCacheView, VoiceOption } from '../../shared/types';
 import type { JournalChunk, JournalDayView } from '../../shared/journal';
 import type { DecorItem, ProgressView } from '../../shared/progress';
 
@@ -78,6 +78,9 @@ export const api = {
       previewEnv?: Record<string, string>;
     },
   ) => call('PATCH', r(repoId), patch),
+  /** The floor manager (#18): enable/disable and its setup. */
+  setManager: (repoId: string, patch: { enabled?: boolean; cli?: AgentCli | ''; model?: string; effort?: EffortLevel | '' }) =>
+    call<ManagerView>('PATCH', `${r(repoId)}/manager`, patch),
   startPreview: (repoId: string, pr?: number) => call<PreviewView>('POST', `${r(repoId)}/preview`, pr ? { pr } : {}),
   stopPreview: (repoId: string) => call<PreviewView>('DELETE', `${r(repoId)}/preview`),
   startPrPreview: (repoId: string, pr: number, restart = false) => call<PrPreviewView>('POST', `${r(repoId)}/pr-previews/${pr}`, { restart }),

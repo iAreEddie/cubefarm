@@ -198,6 +198,6 @@ export function decorColliders(id: ThemeId | null, kind: FloorKind): Rect[] {
 /** What someone wears for theme `id`: picked from their id, so it's the same in every browser and after a reload. */
 export function costumeFor(id: ThemeId | null, agent: { id: string; role: AgentRole }): Costume | null {
   if (!id) return null;
-  const list = THEMES[id].costumes[agent.role];
+  const list = THEMES[id].costumes[agent.role === 'ceo' ? 'ceo' : 'agent'];
   return list.length ? list[hashId(`${id}:${agent.id}`) % list.length] : null;
 }

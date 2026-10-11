@@ -810,9 +810,10 @@ export function createDemoBackend(scale: DemoScale | null = null): Backend {
     trimDesk: (_fullName, _slug, stillIdle) => fakeTrim(stillIdle),
     releaseDesk: async () => undefined,
     startSession: (opts, cb) => {
-      // The big company is for measuring the office at full speed, so it never paces.
-      if (++sessionsStarted === USAGE_WARNING_AT && !scale) fakeUsageWarning(cb);
-      return inTerminal(opts, cb, (c) => (opts.role === 'ceo' ? ceoSession(opts, c) : fakeSession(opts, c, deskRepo.get(opts.cwd) ?? [...repos.keys()][0])));
+      // The big company is for measuring the office at full speed, so it never paces. Manager checks don't count here:
+      // they run every five minutes and would otherwise trigger the demo's usage warning almost at once.
+      if (opts.role !== 'manager' && ++sessionsStarted === USAGE_WARNING_AT && !scale) fakeUsageWarning(cb);
+      return inTerminal(opts, cb, (c) => (opts.role === 'ceo' ? ceoSession(opts, c) : opts.role === 'manager' ? managerSession(opts, c) : fakeSession(opts, c, deskRepo.get(opts.cwd) ?? [...repos.keys()][0])));
     },
     terminals: true,
     reconnectClis: async () => [], // fake sessions end with the office
@@ -1119,6 +1120,66 @@ function demoCeoNotes(): string {
   return file;
 }
 
+/**
+ * The demo's floor-manager check (#18): a short fresh session that reads and updates continuity and sometimes reports
+ * something material, without ever resuming a conversation. It runs through the same scoped office tools as the real one.
+ */
+function managerSession(opts: SessionOptions, cb: SessionCallbacks): SessionHandle {
+  const office = opts.office!;
+  const timers: NodeJS.Timeout[] = [];
+  let stopped = false;
+  let done = false;
+  const wait = (ms: number) => new Promise<void>((resolve) => timers.push(setTimeout(resolve, ms)));
+  const finish = (ok: boolean, text: string, error?: string) => {
+    if (done) return;
+    done = true;
+    cb.tool(null);
+    cb.finished({ ok, text, costUsd: ok ? 0.05 + Math.random() * 0.05 : 0.02, turns: 3 + Math.floor(Math.random() * 4), errors: error ? [error] : [] });
+  };
+  timers.push(
+    setTimeout(async () => {
+      try {
+        cb.log([{ kind: 'system', text: `✻ Claude Code (demo) · ${opts.model || 'default model'} · ${opts.effort} effort · floor manager` }]);
+        cb.tool('mcp__office__read_continuity');
+        const continuity = await office.call('read_continuity', {});
+        cb.log([{ kind: 'result', text: `  ⎿ continuity ${continuity.trim() ? `${continuity.trim().split('\n').length} lines` : 'empty (first check)'}` }]);
+        await wait(700);
+        cb.tool('mcp__office__update_continuity');
+        await office.call('update_continuity', { add: [{ kind: 'fact', text: `Checked the floor at ${new Date().toISOString().slice(11, 16)}.` }] });
+        await wait(500);
+        // Now and then something material, so the CEO waking on a report can be seen in the demo.
+        if (Math.random() < 0.35) {
+          cb.tool('mcp__office__send_report');
+          await office.call('send_report', {
+            kind: 'incident',
+            severity: 'warn',
+            text: 'A pull request has been waiting in QA longer than usual.',
+            evidence: 'demo snapshot',
+            action: 'Consider whether a free agent should pick it up.',
+          });
+          cb.log([{ kind: 'result', text: '  ⎿ report sent to the CEO' }]);
+        }
+        const said = 'No material change on the floor.';
+        cb.log([{ kind: 'text', text: `● ${said}` }]);
+        cb.turn?.(said);
+        finish(true, said);
+      } catch (err) {
+        finish(false, '', stopped ? 'Stopped by manager' : (err as Error).message);
+      }
+    }, 500),
+  );
+  return {
+    send(text) {
+      cb.log([{ kind: 'text', text: `● Noted: "${text.slice(0, 60)}"` }]);
+    },
+    stop() {
+      stopped = true;
+      timers.forEach(clearTimeout);
+      finish(false, '', 'Stopped by manager');
+    },
+  };
+}
+
 function ceoSession(opts: SessionOptions, cb: SessionCallbacks): SessionHandle {
   const office = opts.office!;
   const timers: NodeJS.Timeout[] = [];
@@ -1243,6 +1304,19 @@ function ceoSession(opts: SessionOptions, cb: SessionCallbacks): SessionHandle {
       await use('escalate', { floor, pr, reason: `I tried ${tool}, but the office refused: ${refused(out)}` });
       return `PR #${pr} on floor ${floor} is stuck and I couldn't move it, so it's with you now.`;
     },
+    // A floor manager woke the CEO (#18): read the inbox, acknowledge what it handled, keep one agenda item.
+    async managerReports() {
+      await step([{ kind: 'tool', tool: 'mcp__office__read_reports', text: '⏺ read_reports' }]);
+      const raw = await office.call('read_reports', {});
+      const inbox = JSON.parse(raw) as { unacked: number; reports: { id: string; floor: number; kind: string; text: string; acked: boolean }[] };
+      cb.log([{ kind: 'result', text: `  ⎿ ${inbox.unacked} unacknowledged · ${inbox.reports.length} recent` }]);
+      for (const r of inbox.reports.filter((x) => !x.acked).slice(0, 5)) await use('ack_report', { id: r.id });
+      if (inbox.reports.length) await use('add_agenda', { text: "Recheck the floor managers' incidents at the next hour." });
+      const heard = inbox.reports.length;
+      return heard
+        ? `The floor managers sent ${plural(heard, 'update')}. I read them${inbox.unacked ? ` and handled the ${plural(inbox.unacked, 'new one')}` : ''}; nothing needs you yet.`
+        : 'No floor manager updates right now.';
+    },
     async chat(text: string) {
       const s = await status();
       await think('Reading your message.');
@@ -1312,7 +1386,9 @@ function ceoSession(opts: SessionOptions, cb: SessionCallbacks): SessionHandle {
           ? () => scripts.plan(Number(where?.[1]), prompt.match(/"""([\s\S]*?)"""/)?.[1]?.trim() ?? '')
           : /Periodic review/.test(prompt)
             ? () => scripts.review()
-            : () => scripts.chat(prompt.split('\n').slice(1).join(' ').trim() || prompt);
+            : /floor manager reported|managers' updates/.test(prompt)
+              ? () => scripts.managerReports()
+              : () => scripts.chat(prompt.split('\n').slice(1).join(' ').trim() || prompt);
 
   const finish = (ok: boolean, text: string, error?: string) => {
     if (done) return;

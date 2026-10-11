@@ -609,6 +609,64 @@ const waitingNow = () => {
   return pendingRequests(s.requests).length + unreadMessages(s.messages, s.phoneReadAt);
 };
 
+/** The AI floor managers (#18): their identity and status, the reports they sent, and the CEO's agenda. */
+const HEALTH_COLOR: Record<string, string> = { healthy: '#2ec4b6', quiet: '#8a8f98', stalled: '#f25f5c', recovered: '#8fd14f', deferred: '#ffc93c', failed: '#f25f5c', disabled: '#8a8f98' };
+
+function Managers() {
+  const managers = useStore((s) => [...s.managers].sort((a, b) => a.floor - b.floor));
+  const inbox = useStore((s) => s.managerInbox);
+  const when = (t: number | null) => (t ? new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—');
+  return (
+    <div className="phone-scroll">
+      <h3 className="phone-h">Floor managers</h3>
+      {managers.length === 0 && <p className="muted small phone-empty">No floors yet: every connected repo gets an AI floor manager.</p>}
+      {managers.map((m) => (
+        <div key={m.repoId} className="resume-head">
+          <span className="avatar" style={{ background: HEALTH_COLOR[m.health] ?? '#8a8f98', width: 26, height: 26, fontSize: 11 }} aria-hidden />
+          <div className="grow">
+            <div className="resume-name">
+              {m.name} <span className="muted small">· floor {m.floor}</span>
+            </div>
+            <div className="resume-title small">
+              {m.enabled ? m.health : 'disabled'} · last check {when(m.lastCheckAt)} · next {when(m.nextCheckAt)}
+            </div>
+            {m.detail && <div className="muted small">{m.detail}</div>}
+          </div>
+        </div>
+      ))}
+      <h3 className="phone-h">
+        Reports {inbox.unacked > 0 && <span className="badge">{inbox.unacked}</span>}
+      </h3>
+      {inbox.reports.length === 0 && <p className="muted small phone-empty">No manager reports yet.</p>}
+      {inbox.reports.slice(0, 12).map((r) => (
+        <div key={r.id} className="bubble-office">
+          <div className="row">
+            <span className="chip" style={{ background: r.severity === 'bad' ? '#f25f5c' : r.severity === 'warn' ? '#ffc93c' : '#8fd14f' }}>
+              floor {r.floor} · {r.kind}
+            </span>
+            <span className="spacer" />
+            <span className="muted small">
+              {when(r.at)}
+              {r.ackAt ? ' · acknowledged' : ''}
+            </span>
+          </div>
+          <div>{r.text}</div>
+          {r.evidence && <div className="muted small">{r.evidence}</div>}
+          {r.action && <div className="muted small">→ {r.action}</div>}
+        </div>
+      ))}
+      <h3 className="phone-h">Agenda</h3>
+      {inbox.agenda.length === 0 && <p className="muted small phone-empty">Nothing on the agenda.</p>}
+      {inbox.agenda.map((a) => (
+        <div key={a.id} className="row">
+          <span className="grow">{a.text}</span>
+          <span className="muted small">{a.dueAt ? when(a.dueAt) : 'next hour'}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function Phone({ tab: initialTab, requestId }: { tab?: PhoneTab; requestId?: string }) {
   const [tab, setTab] = useState<PhoneTab>(() =>
     resumeGames && !requestId && waitingNow() <= resumeGames.waiting ? 'games' : (initialTab ?? (requestId ? 'hires' : 'chat')),
@@ -658,10 +716,12 @@ export function Phone({ tab: initialTab, requestId }: { tab?: PhoneTab; requestI
 
   const pending = pendingRequests(requests).length;
   const unread = unreadMessages(messages, readAt);
+  const unacked = useStore((s) => s.managerInbox.unacked);
   const tabs: [PhoneTab, string, string, number][] = [
     ['chat', '💬', ceoName, tab === 'chat' ? 0 : unread],
     ['hires', '👥', 'Team', pending],
     ['company', '📊', 'Company', 0],
+    ['reports', '🗂️', 'Managers', tab === 'reports' ? 0 : unacked],
     ['games', '🎮', 'Games', 0],
   ];
   return (
@@ -678,6 +738,7 @@ export function Phone({ tab: initialTab, requestId }: { tab?: PhoneTab; requestI
           {tab === 'chat' && <Chat />}
           {tab === 'hires' && <TeamChanges focusId={requestId} />}
           {tab === 'company' && <Company />}
+          {tab === 'reports' && <Managers />}
           {tab === 'games' && <Games game={game} onGame={setGame} />}
         </div>
         <nav className="phone-tabs" role="tablist" aria-label="Phone">

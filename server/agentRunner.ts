@@ -341,6 +341,8 @@ export function startSession(opts: SessionOptions, callbacks: SessionCallbacks):
   // The CEO reads repositories and acts through the office tools; it never runs commands.
   const disallowedTools = ['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode', ...CROSS_TURN_TOOLS];
   if (opts.role === 'ceo') disallowedTools.push('Bash', 'PowerShell', 'NotebookEdit');
+  // A floor manager supervises; it never edits the repo or runs commands. Its continuity/reports go through its tools.
+  if (opts.role === 'manager') disallowedTools.push('Bash', 'PowerShell', 'NotebookEdit', 'Write', 'Edit');
 
   const options: Options = {
     cwd: opts.cwd,

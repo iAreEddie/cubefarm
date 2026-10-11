@@ -108,6 +108,10 @@ describe('office tools', () => {
       rerunChecks: async () => '',
       closePull: async () => '',
       escalate: async () => '',
+      readReports: () => '{}',
+      ackReport: () => '',
+      addAgenda: () => '',
+      clearAgenda: () => '',
     });
     const [serverSide, clientSide] = InMemoryTransport.createLinkedPair();
     await office.server.instance.connect(serverSide);
@@ -120,13 +124,17 @@ describe('office tools', () => {
     const { client } = await connect();
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
+      'ack_report',
+      'add_agenda',
       'agent_detail',
+      'clear_agenda',
       'close_issue',
       'close_pull',
       'company_status',
       'configure_agent',
       'escalate',
       'file_issue',
+      'read_reports',
       'rerun_checks',
       'retry_qa',
       'scale_team',
