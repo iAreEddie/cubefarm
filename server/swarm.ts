@@ -3299,6 +3299,7 @@ export class Swarm {
     if (typeof patch.setupDone === 'boolean') s.setupDone = patch.setupDone;
     if (patch.tutorialStep !== undefined) s.tutorialStep = Math.max(-1, Math.round(Number(patch.tutorialStep)) || 0);
     if (typeof patch.autoUpdate === 'boolean') s.autoUpdate = patch.autoUpdate;
+    if (typeof patch.restartAfterMerge === 'boolean') s.restartAfterMerge = patch.restartAfterMerge;
     if (patch.pacingSessions !== undefined) s.pacingSessions = clampPacingSessions(patch.pacingSessions);
     if (patch.trimIdleDesksMin !== undefined) {
       s.trimIdleDesksMin = clampTrimIdleMin(patch.trimIdleDesksMin);
