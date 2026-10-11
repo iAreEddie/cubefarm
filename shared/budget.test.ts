@@ -20,20 +20,27 @@ describe('budgetStatus', () => {
     expect(budgetStatus(10, null)).toEqual({ level: 'ok', pct: null, spent: null, budget: 10 });
   });
 
-  it('reads ok, warning at 80% and over at 100%', () => {
-    expect(budgetStatus(10, 7.9)).toMatchObject({ level: 'ok', pct: 79 });
-    expect(budgetStatus(10, 8)).toMatchObject({ level: 'warning', pct: 80 });
-    expect(budgetStatus(10, 9.5)).toMatchObject({ level: 'warning', pct: 95 });
-    expect(budgetStatus(10, 10)).toMatchObject({ level: 'over', pct: 100 });
-    expect(budgetStatus(10, 12)).toMatchObject({ level: 'over', pct: 120 });
+  it('crosses 80% and 100% on the unrounded ratio, rounding only for display', () => {
+    // just below / exactly at / just above 80%
+    expect(budgetStatus(10, 7.99)).toMatchObject({ level: 'ok' });
+    expect(budgetStatus(10, 8)).toMatchObject({ level: 'warning' });
+    expect(budgetStatus(10, 8.01)).toMatchObject({ level: 'warning' });
+    // just below / exactly at / just above 100%
+    expect(budgetStatus(10, 9.99)).toMatchObject({ level: 'warning' }); // not over: 99.9% rounds to 100% for display only
+    expect(budgetStatus(10, 10)).toMatchObject({ level: 'over' });
+    expect(budgetStatus(10, 10.01)).toMatchObject({ level: 'over' });
+    // pct is the rounded display value, whatever the level
+    expect(budgetStatus(10, 7.99).pct).toBe(80);
+    expect(budgetStatus(10, 9.99).pct).toBe(100);
   });
 });
 
 describe('budgetBlocksNewWork', () => {
-  it('holds only a floor that is at or over its cap', () => {
+  it('holds only a floor that is at or over its cap, on the unrounded ratio', () => {
     expect(budgetBlocksNewWork(budgetStatus(0, 999))).toBe(false);
-    expect(budgetBlocksNewWork(budgetStatus(10, null))).toBe(false);
+    expect(budgetBlocksNewWork(budgetStatus(10, null))).toBe(false); // unknown spend never blocks on its own
     expect(budgetBlocksNewWork(budgetStatus(10, 9))).toBe(false);
+    expect(budgetBlocksNewWork(budgetStatus(10, 9.99))).toBe(false); // just below the cap is not the cap
     expect(budgetBlocksNewWork(budgetStatus(10, 10))).toBe(true);
   });
 });

@@ -25,12 +25,16 @@ export interface BudgetStatus {
   budget: number;
 }
 
-/** A floor's cap and reported spend as a status. `spent` null means nothing has been reported, never a zero. */
+/**
+ * A floor's cap and reported spend as a status. `spent` null means nothing has been reported, never a zero.
+ * The level compares the unrounded ratio; `pct` is rounded only for display, so $7.95 of $10 stays under 80% and
+ * $9.95 of $10 stays under 100% (rounding first would fire each alert early).
+ */
 export function budgetStatus(budget: number, spent: number | null): BudgetStatus {
   if (!(budget > 0)) return { level: 'none', pct: null, spent, budget: 0 };
   if (spent === null) return { level: 'ok', pct: null, spent: null, budget };
-  const pct = Math.round((spent / budget) * 100);
-  return { level: pct >= 100 ? 'over' : pct >= 80 ? 'warning' : 'ok', pct, spent, budget };
+  const ratio = spent / budget;
+  return { level: ratio >= 1 ? 'over' : ratio >= 0.8 ? 'warning' : 'ok', pct: Math.round(ratio * 100), spent, budget };
 }
 
 /** True when a floor at 100% of its cap must hold new issues. A floor with no cap, or nothing reported, never blocks. */
