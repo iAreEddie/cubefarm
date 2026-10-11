@@ -236,6 +236,68 @@ function FloorRow({ repo, all }: { repo: RepoView; all: RepoView[] }) {
   );
 }
 
+/** The AI floor manager (#18): its identity, cadence and setup, right under the floor it supervises. */
+function FloorManagerRow({ repo }: { repo: RepoView }) {
+  const mgr = useStore((s) => s.managers.find((m) => m.repoId === repo.id));
+  const clis = useStore((s) => s.clis);
+  if (!mgr) return null;
+  const patch = (p: Parameters<typeof api.setManager>[1]) => void attempt(() => api.setManager(repo.id, p));
+  const when = (t: number | null) => (t ? new Date(t).toLocaleString() : '—');
+  return (
+    <div className="card" style={{ ['--accent' as string]: repo.color }}>
+      <div className="row">
+        <b>{mgr.name}</b>
+        <span className="muted small">· floor manager · {mgr.enabled ? mgr.health : 'disabled'}{mgr.running ? ' (checking…)' : ''}</span>
+        <span className="spacer" />
+        <label className="row small" title="Turn this floor's five-minute supervisor checks on or off">
+          <input type="checkbox" checked={mgr.enabled} onChange={(e) => patch({ enabled: e.target.checked })} /> Enabled
+        </label>
+      </div>
+      <div className="muted small">
+        Last check {when(mgr.lastCheckAt)} · last successful assessment {when(mgr.lastSuccessfulAt)} · next {when(mgr.nextCheckAt)} · {mgr.checks} checks, {mgr.assessments} assessments, {mgr.deferrals} deferred
+      </div>
+      {mgr.detail && <div className="small">{mgr.detail}</div>}
+      {mgr.latest && (
+        <div className="small">
+          Latest report [{mgr.latest.kind}] {mgr.latest.text}
+        </div>
+      )}
+      <details>
+        <summary className="small">Continuity file · <code>{mgr.continuityPath}</code></summary>
+        <pre className="term-log small">{mgr.continuity || '(empty)'}</pre>
+      </details>
+      <div className="row wrap small">
+        <label className="field">
+          Coding agent
+          <select value={mgr.cli} onChange={(e) => patch({ cli: e.target.value as AgentCli | '' })}>
+            <option value="">Office default</option>
+            {clis.map((c) => (
+              <option key={c.id} value={c.id} disabled={!c.installed}>
+                {c.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          Model
+          <input value={mgr.model} placeholder="Office default" onChange={(e) => patch({ model: e.target.value })} />
+        </label>
+        <label className="field">
+          Effort
+          <select value={mgr.effort} onChange={(e) => patch({ effort: e.target.value as EffortLevel | '' })}>
+            <option value="">Default (low)</option>
+            {(['low', 'medium', 'high', 'xhigh', 'max'] as EffortLevel[]).map((x) => (
+              <option key={x} value={x}>
+                {x}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+    </div>
+  );
+}
+
 function FloorsTab() {
   const repos = useStore((s) => s.repos);
   const officeUpdate = useStore((s) => s.officeUpdate);
@@ -246,7 +308,10 @@ function FloorsTab() {
         <h3 className="section">🏢 Floors</h3>
         {repos.length === 0 && <p className="muted">No floors yet. Add a project →</p>}
         {[...repos].sort((a, b) => a.floor - b.floor).map((r) => (
-          <FloorRow key={r.id} repo={r} all={repos} />
+          <div key={r.id}>
+            <FloorRow repo={r} all={repos} />
+            <FloorManagerRow repo={r} />
+          </div>
         ))}
       </div>
       <div className="card">

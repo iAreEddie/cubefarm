@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { CEO_ID, DEFAULT_DOG_NAME, DEFAULT_MAX_AGENTS, DEFAULT_MAX_QA_AT_ONCE, type AgentView, type CeoInfo, type CliView, type DoctorFinding, type HireRequestView, type LogLine, type NotifyChannelsView, type OfficeUpdateView, type OpsView, type PhoneMessage, type PongRow, type PrPreviewView, type QaView, type RepoView, type ServerEvent, type SwarmSettings, type TickerItem, type UsageView, type VisitorView, type VoiceCacheView, type WorldSnapshot } from '../../shared/types';
+import { CEO_ID, DEFAULT_DOG_NAME, DEFAULT_MAX_AGENTS, DEFAULT_MAX_QA_AT_ONCE, type AgentView, type CeoInfo, type CliView, type DoctorFinding, type HireRequestView, type LogLine, type ManagerInboxView, type ManagerView, type NotifyChannelsView, type OfficeUpdateView, type OpsView, type PhoneMessage, type PongRow, type PrPreviewView, type QaView, type RepoView, type ServerEvent, type SwarmSettings, type TickerItem, type UsageView, type VisitorView, type VoiceCacheView, type WorldSnapshot } from '../../shared/types';
 import { blockers } from '../../shared/issues';
 import { latestListed } from '../../shared/watch';
 import { DEFAULT_WEATHER, DEFAULT_WORLD_EVENTS, EMPTY_WEATHER_VIEW, type WeatherView } from '../../shared/outside';
@@ -21,7 +21,7 @@ import { emitReward } from './world/decor/rewards';
 
 export type Agent = Omit<AgentView, 'log'>;
 
-export type PhoneTab = 'chat' | 'hires' | 'company' | 'games';
+export type PhoneTab = 'chat' | 'hires' | 'company' | 'reports' | 'games';
 
 export type Overlay =
   | { kind: 'terminal'; agentId: string }
@@ -110,6 +110,8 @@ interface State {
   qa: Record<string, QaView>; // `${repoId}#${prNumber}`
   prPreviews: Record<string, PrPreviewView>; // the PR theatre's previews, `${repoId}#${pr}`
   requests: HireRequestView[];
+  managers: ManagerView[]; // one AI floor manager per connected repo (#18)
+  managerInbox: ManagerInboxView; // the reports and agenda the CEO reads
   ceo: CeoInfo;
   messages: PhoneMessage[];
   phoneReadAt: number;
@@ -241,6 +243,8 @@ export const useStore = create<State>((set, get) => ({
   qa: {},
   prPreviews: {},
   requests: [],
+  managers: [],
+  managerInbox: { reports: [], agenda: [], unacked: 0 },
   ceo: { queue: [], job: null, lastReviewAt: null, nextReviewAt: null },
   messages: [],
   phoneReadAt: 0,
@@ -308,6 +312,8 @@ export const useStore = create<State>((set, get) => ({
           qa,
           prPreviews,
           requests: d.requests,
+          managers: d.managers ?? [],
+          managerInbox: d.managerInbox ?? { reports: [], agenda: [], unacked: 0 },
           ceo: d.ceo,
           messages: d.messages,
           phoneReadAt: d.phoneReadAt,
@@ -449,6 +455,18 @@ export const useStore = create<State>((set, get) => ({
         set({ requests: requests.sort((a, b) => a.createdAt - b.createdAt) });
         break;
       }
+      case 'manager': {
+        const managers = get().managers.filter((m) => m.repoId !== ev.manager.repoId);
+        managers.push(ev.manager);
+        set({ managers: managers.sort((a, b) => a.floor - b.floor) });
+        break;
+      }
+      case 'managerRemoved':
+        set({ managers: get().managers.filter((m) => m.repoId !== ev.repoId) });
+        break;
+      case 'managerInbox':
+        set({ managerInbox: ev.inbox });
+        break;
       case 'ceo':
         set({ ceo: ev.ceo });
         break;

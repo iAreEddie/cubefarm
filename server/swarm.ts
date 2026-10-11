@@ -6,7 +6,8 @@ import type { Backend } from './backend.ts';
 import type { LogEntry, SessionHandle, SessionResult } from './agentRunner.ts';
 import type { PrDetails } from './github.ts';
 import { defaultProjectsDir, DESK_SWEEP_INTERVAL_MS, HOME_DIR, LOG_BUFFER, SCHEDULER_INTERVAL_MS, STATE_FILE, SYNC_INTERVAL_MS, VERSION } from './config.ts';
-import { askedFor, ceoJobPrompt, ceoSystemPrompt, checkCloseIssue, createOfficeTools, floorCapacity, IssueCap, jobLabel, NOT_ASKED, planDependencies, plannedSize, scalePlan, type CeoJob, type OfficeTools, type TeamNow } from './ceo.ts';
+import { askedFor, ceoJobPrompt, ceoSystemPrompt, checkCloseIssue, createManagerTools, createOfficeTools, floorCapacity, IssueCap, jobLabel, NOT_ASKED, planDependencies, plannedSize, scalePlan, type CeoJob, type ManagerHandlers, type OfficeTools, type TeamNow } from './ceo.ts';
+import { buildSnapshot, CHECK_MS, clearAgenda as clearAgendaItem, compactAgenda, compactContinuity, CONTINUITY_MAX, continuityEqual, deferReason, detectSignals, dueAgenda, healthFrom, HOUR_MS, hourlyReport, incidentReport, INBOX_MAX, MAX_REPORT_AGE_MS, managerCheckPrompt, managerSetup, managerSystemPrompt, mergeContinuity, openAgenda, planCadence, reconcile, recoveryReport, serializeContinuity, shouldWakeCeo, truncate, type CapacityInput, type ContinuityEntry, type Incident, type ManagerSignal, type ReportDraft, type SnapshotInput } from './floorManager.ts';
 import { afterClose, ASK_AGAIN_MS, closedWhy, closuresHeld, forgettable, issueOpen, nameList, pullNow, stillOpen, stoppedMessage, toAsk, toHold, type Closure, type FloorState, type KnownPull, type LearnedPull } from './closeCleanup.ts';
 import { depsPromptLine, type DepsOutcome } from './deps.ts';
 import { setUpDesk } from './deskSetup.ts';
@@ -82,6 +83,10 @@ import type {
   HireRequestView,
   IssueInfo,
   LogLine,
+  ManagerAgendaView,
+  ManagerInboxView,
+  ManagerReportView,
+  ManagerView,
   OfficeUpdateView,
   OpsView,
   PhoneMessage,
@@ -121,11 +126,35 @@ interface PersistedRepo {
   qaBrief: string;
   preview: PreviewConfig; // how the floor's app runs for the preview monitor
   addedAt: number;
+  manager: ManagerState; // the floor's AI supervisor (#18)
   budgetUsd: number; // the manager's cap on the floor's reported spend (#7); 0 = no budget
   spentUsd: number; // reported spend accumulated over the floor's life (only sessions that report a cost add to it)
   costSessions: number; // sessions that reported a cost: 0 means spend is "not reported", never a zero
   budgetWarned: boolean; // the 80% alert has been posted for the current crossing
   budgetStopped: boolean; // the 100% alert has been posted for the current crossing
+}
+
+/** A floor manager's persisted supervisor state; the continuity itself lives in a file on disk, read every check. */
+interface ManagerState {
+  enabled: boolean;
+  name: string;
+  cli: AgentCli | ''; // '' = the office default
+  model: string; // '' = the office default
+  effort: EffortLevel | ''; // '' = the office default (checks resolve to low)
+  lastCheckAt: number | null;
+  lastHourlyAt: number | null;
+  lastSuccessfulAt: number | null;
+  lastReportAt: number | null;
+  checks: number;
+  assessments: number;
+  deferrals: number;
+  failure: string | null;
+  deferred: string | null; // why the last check was skipped
+  recoveredUntil: number | null; // show "recovered" briefly after an incident clears
+  lastAssessment: string | null;
+  continuity: ContinuityEntry[];
+  incidents: Incident[];
+  lastMerged: string[]; // merged "repo#pr" ids seen, for meaningful completions
 }
 
 interface PersistedAgent {
@@ -217,6 +246,9 @@ interface Persisted {
   ceo: CeoState;
   messages: PhoneMessage[];
   phoneReadAt: number;
+  reports: ManagerReportView[]; // the floor managers' report inbox (#18)
+  agenda: ManagerAgendaView[]; // what the CEO keeps to consider at the next hour (or a due time)
+  reportSeq: number;
   prLimits: number; // the PR budgets (PR_LIMITS_VERSION) needs-human records were judged by
   ops: OpsHistory; // mission control's rolling week of merges, QA verdicts, check runs and costs
   held: HeldIssue[];
@@ -314,6 +346,10 @@ const CEO_EFFORT: EffortLevel = 'xhigh';
 const CEO_NAME = 'Morgan';
 // The CEO's own folder: its notes about the company live here. Repos are read through their clones.
 const CEO_DIR = path.join(HOME_DIR, 'ceo');
+// The managers' own supervisors, one per floor, identified on the floor and in the phone.
+const MANAGER_NAMES = ['Iris', 'Victor', 'Nadia', 'Oscar', 'Petra', 'Hugo', 'Rosa', 'Felix', 'Bianca', 'Miles'];
+// How often the managers' cadence is evaluated (checks are five minutes apart; the tick is a lighter beat).
+const MANAGER_TICK_MS = 60_000;
 const DEFAULT_PROJECTS_DIR = defaultProjectsDir(path.resolve(import.meta.dirname, '..'));
 const MAX_ISSUES_PER_JOB = 12;
 const KEEP_MESSAGES = 200;
@@ -501,6 +537,9 @@ export class Swarm {
     ceo: { queue: [], job: null, lastReviewAt: null, lastFingerprint: null },
     messages: [],
     phoneReadAt: 0,
+    reports: [],
+    agenda: [],
+    reportSeq: 1,
     prLimits: PR_LIMITS_VERSION,
     ops: emptyHistory(),
     held: [],
@@ -526,12 +565,21 @@ export class Swarm {
       rerunChecks: (a) => this.triageRerunChecks(a),
       closePull: (a) => this.triageClosePull(a),
       escalate: (a) => this.triageEscalate(a),
+      readReports: (a) => this.readReports(a),
+      ackReport: (a) => this.ackReport(a),
+      addAgenda: (a) => this.addAgenda(a),
+      clearAgenda: (a) => this.clearAgenda(a),
     });
   }
   private ceoIssues = new IssueCap(MAX_ISSUES_PER_JOB); // issues filed during the current CEO job
   private ceoAsked = false; // the manager asked for work in the current CEO job (a plan, or a message): only then are issues filed
   private messageSeq = 1;
   private agentRt = new Map<string, AgentRuntime>();
+  // One supervisor session per floor (#18); managers are separate from the interchangeable agents and never hold work.
+  private managerRt = new Map<string, { session: SessionHandle | null; running: boolean; log: LogEntry[]; currentTool: string | null }>();
+  private lastManagerJson = new Map<string, string>(); // repo id -> last manager view sent, to skip no-op broadcasts
+  private lastManagerInbox = '';
+  private lastReportWakeAt = 0; // when the CEO was last woken for reports, so a failed ack retries only on a fresh report
   private seenActivity = new Map<string, SeenActivity>(); // agent id -> their latest action in the log
   private shownActivity = new Map<string, AgentActivity | null>(); // agent id -> the activity clients last heard
   private ticker = new Ticker({
@@ -684,6 +732,9 @@ export class Swarm {
         ceo: { ...this.state.ceo, ...loaded.ceo },
         messages: loaded.messages ?? [],
         phoneReadAt: loaded.phoneReadAt ?? 0,
+        reports: Array.isArray(loaded.reports) ? loaded.reports : [],
+        agenda: Array.isArray(loaded.agenda) ? loaded.agenda : [],
+        reportSeq: Number(loaded.reportSeq) || 1,
         prLimits: loaded.prLimits ?? 1,
         ops: loadHistory(loaded.ops, Date.now()),
         held: loaded.held ?? [],
@@ -725,6 +776,8 @@ export class Swarm {
       if (loaded.settings && loaded.settings.setupDone === undefined && this.state.repos.length > 0) {
         Object.assign(this.state.settings, { setupDone: true, tutorialStep: -1 });
       }
+      for (const r of this.state.repos) r.manager = this.loadManager(r);
+      for (const m of this.state.reports) this.state.reportSeq = Math.max(this.state.reportSeq, Number(String(m.id).replace(/^r/, '')) || 0);
     } catch {
       // first run
     }
@@ -822,6 +875,9 @@ export class Swarm {
     setInterval(() => this.emitOps(), OPS_TICK_MS); // the clock moves the numbers too: the last hour, today, errors turning into alarms
     setInterval(() => this.notifyStuck(), 60_000);
     setInterval(() => this.watchdogTick(), WATCHDOG_MS);
+    setInterval(() => this.managerTick(), MANAGER_TICK_MS);
+    // A restart/resume runs one overdue check/latest-hour catch-up, never every missed interval.
+    setTimeout(() => this.managerTick(), 2000);
     void this.backend
       .detectClis()
       .then((clis) => {
@@ -1066,6 +1122,8 @@ export class Swarm {
       qa: this.state.qa.map((q) => this.qaView(q)),
       prPreviews: this.previews.prViews(),
       requests: this.state.requests,
+      managers: this.state.repos.map((r) => this.managerView(r)),
+      managerInbox: this.managerInboxView(),
       ceo: this.ceoInfo(),
       messages: this.state.messages.slice(-100),
       phoneReadAt: this.state.phoneReadAt,
@@ -1246,8 +1304,11 @@ export class Swarm {
     return a;
   }
 
+  /** Running agent sessions plus any floor manager check in session: both count toward the office's concurrency. */
   private running() {
-    return this.state.agents.filter((a) => BUSY.includes(a.status)).length;
+    let n = 0;
+    for (const rt of this.managerRt.values()) if (rt.running) n++;
+    return this.state.agents.filter((a) => BUSY.includes(a.status)).length + n;
   }
 
   /** True when the manager has set a session limit and every slot is taken. */
@@ -1346,6 +1407,7 @@ export class Swarm {
       qaBrief: '',
       preview: { ...DEFAULT_PREVIEW, env: {} },
       addedAt: Date.now(),
+      manager: this.loadManager({ floor, id: meta.nameWithOwner } as PersistedRepo),
       budgetUsd: 0,
       spentUsd: 0,
       costSessions: 0,
@@ -1354,6 +1416,7 @@ export class Swarm {
     };
     this.backend.setLocalPath(repo.fullName, folder);
     this.state.repos.push(repo);
+    this.emitManager(repo);
     this.repoRt.set(repo.id, { issues: [], pulls: [], lastSync: null, syncing: false, cloneStatus: 'pending', lastMergedAt: null, folderSync: null, merging: false, closedIssues: new Map(), closedPulls: new Map(), openAt: new Map() });
     this.save();
     this.emitRepo(repo);
@@ -1424,6 +1487,11 @@ export class Swarm {
   disconnectRepo(id: string) {
     const repo = this.repo(id);
     this.state.ceo.queue = this.state.ceo.queue.filter((j) => j.repoId !== id);
+    // The floor manager goes with the floor: stop its session and drop its runtime; its continuity file stays on disk.
+    const mrt = this.managerRt.get(id);
+    mrt?.session?.stop();
+    this.managerRt.delete(id);
+    this.lastManagerJson.delete(id);
     for (const r of this.state.requests.filter((x) => x.repoId === id && x.status === 'pending')) {
       this.decide(r, { status: 'rejected', note: 'The floor was disconnected.', decidedBy: null });
     }
@@ -1444,6 +1512,7 @@ export class Swarm {
     this.backend.setLocalPath(repo.fullName, null);
     this.save();
     this.broadcast({ type: 'repoRemoved', repoId: id });
+    this.broadcast({ type: 'managerRemoved', repoId: id });
     for (const r of this.state.repos) this.emitRepo(r);
     this.toast('info', repo.localPath ? `${repo.fullName} left the building. Your folder ${repo.localPath} is untouched.` : `${repo.fullName} disconnected (its clone stays on disk)`);
   }
@@ -3849,6 +3918,444 @@ export class Swarm {
     return this.officeUpdateView();
   }
 
+  // ---------- the floor managers (#18) ----------
+
+  /** Fill in a floor manager's persisted state (new or from an older state file): enabled, default setup and cadence. */
+  private loadManager(r: { floor: number; manager?: Partial<ManagerState> }): ManagerState {
+    const m = r.manager ?? {};
+    return {
+      enabled: m.enabled !== false,
+      name: m.name || MANAGER_NAMES[(Math.max(1, r.floor) - 1) % MANAGER_NAMES.length],
+      cli: isCli(m.cli) ? m.cli : '',
+      model: typeof m.model === 'string' ? m.model : '',
+      effort: EFFORTS.includes(m.effort as EffortLevel) ? (m.effort as EffortLevel) : '',
+      lastCheckAt: m.lastCheckAt ?? null,
+      lastHourlyAt: m.lastHourlyAt ?? null,
+      lastSuccessfulAt: m.lastSuccessfulAt ?? null,
+      lastReportAt: m.lastReportAt ?? null,
+      checks: m.checks ?? 0,
+      assessments: m.assessments ?? 0,
+      deferrals: m.deferrals ?? 0,
+      failure: m.failure ?? null,
+      deferred: m.deferred ?? null,
+      recoveredUntil: m.recoveredUntil ?? null,
+      lastAssessment: m.lastAssessment ?? null,
+      continuity: Array.isArray(m.continuity) ? m.continuity : [],
+      incidents: Array.isArray(m.incidents) ? m.incidents : [],
+      lastMerged: Array.isArray(m.lastMerged) ? m.lastMerged : [],
+    };
+  }
+
+  private managerDir(repo: PersistedRepo) {
+    return path.join(HOME_DIR, this.backend.demo ? 'demo-managers' : 'managers', repo.id.replace(/[^a-z0-9._-]+/gi, '__'));
+  }
+
+  private managerContinuityPath(repo: PersistedRepo) {
+    return path.join(this.managerDir(repo), 'continuity.md');
+  }
+
+  /** The continuity file as the check session sees it (bounded); '' when there is none yet. */
+  private async readContinuity(repo: PersistedRepo): Promise<string> {
+    try {
+      return truncate(await fs.readFile(this.managerContinuityPath(repo), 'utf8'), CONTINUITY_MAX).text;
+    } catch {
+      return serializeContinuity(repo.id, { entries: repo.manager.continuity });
+    }
+  }
+
+  /** Write the continuity file atomically (temp file + rename), like the state file. */
+  private async writeContinuity(repo: PersistedRepo, text: string): Promise<void> {
+    const file = this.managerContinuityPath(repo);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    const tmp = `${file}.tmp`;
+    await fs.writeFile(tmp, text);
+    await fs.rename(tmp, file);
+  }
+
+  /** One floor's manager as the UI and phone see it. */
+  private managerView(repo: PersistedRepo): ManagerView {
+    const m = repo.manager;
+    const rt = this.managerRt.get(repo.id);
+    const now = Date.now();
+    const { health, detail } = healthFrom(m.incidents, { enabled: m.enabled, running: !!rt?.running, failure: m.failure, deferred: !!m.deferred, recoveredUntil: m.recoveredUntil, now });
+    const continuity = serializeContinuity(repo.id, { entries: m.continuity });
+    const latest = [...this.state.reports].reverse().find((r) => r.repoId === repo.id) ?? null;
+    return {
+      repoId: repo.id,
+      floor: repo.floor,
+      name: m.name,
+      enabled: m.enabled,
+      cli: m.cli,
+      model: m.model,
+      effort: m.effort,
+      health,
+      detail: detail,
+      running: !!rt?.running,
+      lastCheckAt: m.lastCheckAt,
+      lastSuccessfulAt: m.lastSuccessfulAt,
+      nextCheckAt: planCadence({ enabled: m.enabled, lastCheckAt: m.lastCheckAt, lastHourlyAt: m.lastHourlyAt }, now).nextCheckAt,
+      lastReportAt: m.lastReportAt,
+      checks: m.checks,
+      assessments: m.assessments,
+      deferrals: m.deferrals,
+      continuityPath: this.managerContinuityPath(repo),
+      continuity: truncate(continuity, CONTINUITY_MAX).text,
+      latest: latest ? { kind: latest.kind, text: latest.text, at: latest.at } : null,
+    };
+  }
+
+  private emitManager(repo: PersistedRepo) {
+    const view = this.managerView(repo);
+    const key = JSON.stringify(view);
+    if (key === this.lastManagerJson.get(repo.id)) return;
+    this.lastManagerJson.set(repo.id, key);
+    this.broadcast({ type: 'manager', manager: view });
+  }
+
+  private managerInboxView(): ManagerInboxView {
+    const reports = [...this.state.reports].sort((a, b) => b.at - a.at).slice(0, INBOX_MAX);
+    return { reports, agenda: openAgenda(this.state.agenda), unacked: this.state.reports.filter((r) => r.ackAt == null).length };
+  }
+
+  private emitManagerInbox() {
+    const inbox = this.managerInboxView();
+    const key = JSON.stringify(inbox);
+    if (key === this.lastManagerInbox) return;
+    this.lastManagerInbox = key;
+    this.broadcast({ type: 'managerInbox', inbox });
+  }
+
+  /** The bounded, floor-only snapshot a check reads: workers, QA, doctor findings, capacity and holds. */
+  private managerInput(repo: PersistedRepo): SnapshotInput {
+    const rt = this.repoRt.get(repo.id);
+    const pulls = rt?.pulls ?? [];
+    const workers = this.state.agents
+      .filter((a) => a.repoId === repo.id && a.role === 'agent')
+      .map((a) => ({
+        id: a.id,
+        name: a.name,
+        status: a.status,
+        task: a.task,
+        issueNumber: a.issueNumber,
+        prNumber: a.prNumber,
+        startedAt: a.startedAt,
+        endedAt: a.endedAt,
+        activeAt: this.activeAt(a),
+        work: this.workOf(a),
+      }));
+    const qa = this.state.qa
+      .filter((q) => q.repoId === repo.id)
+      .map((q) => {
+        const pr = pulls.find((p) => p.number === q.prNumber);
+        return { prNumber: q.prNumber, title: pr?.title ?? '', status: q.status, round: q.round, updatedAt: q.updatedAt, checks: pr?.checks ?? 'none', mergeable: pr?.mergeable ?? 'UNKNOWN', stuckWhy: q.stuckWhy, mergeNote: q.mergeNote };
+      });
+    const doctor = this.doctor.filter((f) => f.repoId === repo.id).map((f) => ({ id: f.id, kind: f.kind, text: f.text, since: f.since }));
+    const team = this.state.agents.filter((a) => a.repoId === repo.id && a.role === 'agent');
+    const open = new Set((rt?.issues ?? []).map((i) => i.number));
+    const nums = this.opsNow().floors.find((f) => f.repoId === repo.id);
+    const capacity: CapacityInput = {
+      team: team.length,
+      free: team.filter((a) => this.isFree(a)).length,
+      busy: team.filter((a) => BUSY.includes(a.status)).length,
+      idle: team.filter((a) => a.status === 'idle').length,
+      errors: team.filter((a) => a.status === 'error').length,
+      ready: rt?.lastSync ? this.readyIssues(repo).length : 0,
+      blocked: (rt?.issues ?? []).filter((i) => !this.issueTaken(repo, i.number) && blockers(i.body, open).length > 0).length,
+      building: team.filter((a) => (a.status === 'working' || a.status === 'preparing') && a.task === 'issue').length,
+      inQa: this.state.qa.filter((q) => q.repoId === repo.id && (q.status === 'queued' || q.status === 'testing')).length,
+      fixing: this.state.qa.filter((q) => q.repoId === repo.id && (q.status === 'failed' || q.status === 'fixing')).length,
+      toMerge: this.state.qa.filter((q) => q.repoId === repo.id && q.status === 'passed').length,
+      needsYou: nums?.needsYou ?? 0,
+      triage: nums?.triage ?? 0,
+      mergesHour: nums?.mergedHour ?? 0,
+      mergesToday: nums?.mergedToday ?? 0,
+    };
+    const usage = this.usageNow().state;
+    return { repoId: repo.id, fullName: repo.fullName, floor: repo.floor, workers, qa, doctor, capacity, holds: { usage, sessionLimit: this.state.settings.sessionLimit, sessionsRunning: this.running() } };
+  }
+
+  /** Why a floor manager's check can't run right now, or null. Busy/full/limited/draining checks defer, never queue. */
+  private managerDeferral(): string | null {
+    return deferReason({ usagePaused: this.limited(), draining: this.officeUpdate.drainingSince != null || this.officeUpdate.sent, slotsFull: this.slotsFull() });
+  }
+
+  /**
+   * The managers' beat: sample each floor's deterministic checks every minute, send the hourly summary on the hour even
+   * when quiet, and start a fresh check session when one is due and not deferred. One session per floor at a time.
+   */
+  private managerTick() {
+    if (this.state.repos.length === 0) return;
+    const now = Date.now();
+    for (const repo of this.state.repos) {
+      const m = repo.manager;
+      const rt = this.managerRt.get(repo.id) ?? { session: null, running: false, log: [] as LogEntry[], currentTool: null };
+      this.managerRt.set(repo.id, rt);
+      if (!rt.running) m.deferred = null; // a deferral only stands while a due check is actually being skipped
+      // A disabled manager samples nothing and reports nothing: it never fires recoveries for work it stopped watching.
+      if (m.enabled) {
+        const input = this.managerInput(repo);
+        const signals = detectSignals(input, now);
+        const rec = reconcile(repo.id, m.incidents, signals, now);
+        m.incidents = rec.incidents;
+        for (const inc of rec.raised) {
+          this.sendManagerReport(repo, incidentReport(inc), now);
+          inc.reportedAt = now;
+        }
+        for (const inc of rec.recovered) {
+          this.sendManagerReport(repo, recoveryReport(inc, now), now);
+          m.recoveredUntil = now + 5 * 60_000;
+        }
+        this.noticeCompletions(repo, now);
+        m.lastHourlyAt ??= now; // the first hour counts from the first tick
+        const plan = planCadence({ enabled: true, lastCheckAt: m.lastCheckAt, lastHourlyAt: m.lastHourlyAt }, now);
+        if (now >= m.lastHourlyAt + HOUR_MS) {
+          this.sendManagerReport(repo, hourlyReport(input, m.incidents, { now, missedChecks: plan.overdueChecks, downtimeMs: null }), now);
+          m.lastHourlyAt = now;
+        }
+        if (plan.run && !rt.running) {
+          const deferral = this.managerDeferral();
+          if (deferral) m.deferred = deferral;
+          else {
+            m.deferred = null;
+            this.startManagerCheck(repo, plan, input, signals, now);
+          }
+        }
+      }
+      this.emitManager(repo);
+      this.save();
+    }
+    this.emitManagerInbox();
+  }
+
+  /** Report a PR merged in the last check window: a meaningful completion, not the whole merge history. */
+  private noticeCompletions(repo: PersistedRepo, now: number) {
+    const m = repo.manager;
+    const pulls = this.repoRt.get(repo.id)?.pulls ?? [];
+    const merged = pulls.filter((p) => p.state === 'MERGED').map((p) => `${repo.id}#${p.number}`);
+    for (const p of pulls) {
+      if (p.state !== 'MERGED') continue;
+      const at = p.mergedAt ? Date.parse(p.mergedAt) : NaN;
+      if (!Number.isFinite(at) || now - at > CHECK_MS + 60_000) continue;
+      if (m.lastMerged.includes(`${repo.id}#${p.number}`)) continue;
+      this.sendManagerReport(repo, { kind: 'completion', severity: 'info', text: `Merged PR #${p.number} "${p.title}".`, evidence: `floor ${repo.floor} · ${repo.fullName}`, action: '' }, now);
+    }
+    m.lastMerged = merged;
+  }
+
+  private startManagerCheck(repo: PersistedRepo, plan: { run: 'check' | 'hourly' | null; overdueChecks: number }, input: SnapshotInput, signals: ManagerSignal[], now: number) {
+    const m = repo.manager;
+    const rt = this.managerRt.get(repo.id)!;
+    m.lastCheckAt = now;
+    m.checks++;
+    if (plan.run === 'hourly') m.lastHourlyAt = now;
+    rt.running = true;
+    rt.currentTool = null;
+    this.emitManager(repo);
+    this.save();
+    void this.runManagerCheck(repo, plan.run === 'hourly', input, signals, plan.overdueChecks, now).catch((err) => this.finishManagerCheck(repo, null, oneLine(err)));
+  }
+
+  private async runManagerCheck(repo: PersistedRepo, hourly: boolean, input: SnapshotInput, signals: ManagerSignal[], missedChecks: number, now: number) {
+    const m = repo.manager;
+    const rt = this.managerRt.get(repo.id)!;
+    const setup = managerSetup(
+      { cli: m.cli, model: m.model, effort: m.effort },
+      { cli: this.state.settings.defaultCli, model: this.state.settings.defaultModel || DEFAULT_MODEL, effort: this.state.settings.defaultEffort },
+    );
+    const continuity = await this.readContinuity(repo);
+    const snapshot = buildSnapshot(input, now).text;
+    const agenda = dueAgenda(this.state.agenda, now).map((a) => ({ text: a.text, dueAt: a.dueAt }));
+    const prompt = managerCheckPrompt({ snapshot, continuity, signals, hourly, missedChecks, agenda, now });
+    const dir = this.managerDir(repo);
+    await fs.mkdir(dir, { recursive: true }).catch(() => undefined);
+    if (!rt.running) return; // deferred/stopped between start and here
+    rt.session = this.backend.startSession(
+      {
+        cwd: dir,
+        prompt,
+        systemAppend: managerSystemPrompt({ name: m.name, repo: repo.fullName, floor: repo.floor, continuityPath: this.managerContinuityPath(repo) }),
+        model: setup.model,
+        effort: setup.effort,
+        browserTesting: false,
+        additionalDirectories: [],
+        role: 'manager',
+        office: this.managerTools(repo.id),
+      },
+      {
+        log: (entries) => {
+          rt.log = [...rt.log, ...entries].slice(-100);
+          const tool = entries.find((e) => e.tool);
+          if (tool?.tool) rt.currentTool = tool.tool;
+        },
+        tool: (name) => {
+          rt.currentTool = name;
+        },
+        sessionId: () => undefined,
+        browserUrl: () => undefined,
+        screenshot: () => undefined,
+        turn: (text) => {
+          m.lastAssessment = text.slice(0, 300);
+        },
+        limited: (at) => this.pauseForLimit(at),
+        usageWarning: (info) => this.paceForWarning(info),
+        finished: (result) => this.finishManagerCheck(repo, result, null),
+      },
+    );
+  }
+
+  private finishManagerCheck(repo: PersistedRepo, result: SessionResult | null, error: string | null) {
+    const m = repo.manager;
+    const rt = this.managerRt.get(repo.id);
+    if (!rt || !rt.running) return;
+    rt.running = false;
+    rt.session = null;
+    rt.currentTool = null;
+    const at = Date.now();
+    if (result?.ok) {
+      m.assessments++;
+      m.lastSuccessfulAt = at;
+      m.failure = null;
+    } else {
+      m.failure = error ?? (result ? result.errors.join('; ') || 'the check failed' : 'the check failed');
+    }
+    this.emitManager(repo);
+    this.save();
+  }
+
+  /** The scoped office tools a floor manager's session gets: continuity and reports only, limited to one repo. */
+  private managerTools(repoId: string): OfficeTools {
+    const handlers: ManagerHandlers = {
+      readContinuity: () => this.readContinuity(this.repo(repoId)),
+      updateContinuity: async (a) => {
+        const repo = this.repo(repoId);
+        const now = Date.now();
+        const doc = { entries: repo.manager.continuity };
+        const merged = mergeContinuity(doc, now, (a.add ?? []).map((x) => ({ id: x.id, kind: (x.kind as ContinuityEntry['kind']) ?? 'fact', text: String(x.text ?? '') })), a.resolve ?? []);
+        const compacted = compactContinuity(merged.doc);
+        if (merged.changed && !continuityEqual(doc, compacted)) {
+          await this.writeContinuity(repo, serializeContinuity(repo.id, compacted));
+          repo.manager.continuity = compacted.entries;
+          this.emitManager(repo);
+          this.save();
+        } else if (merged.changed) {
+          repo.manager.continuity = compacted.entries;
+        }
+        return merged.changed ? `Continuity updated: ${merged.added} added, ${merged.removed} resolved.` : 'Continuity unchanged.';
+      },
+      sendReport: (a) => {
+        const repo = this.repo(repoId);
+        const kindWanted = ['incident', 'recovery', 'completion', 'bottleneck', 'decision'].includes(String(a.kind)) ? (a.kind as ReportDraft['kind']) : 'incident';
+        const severity: ReportDraft['severity'] = a.severity === 'info' || a.severity === 'bad' ? a.severity : a.severity === 'warn' ? 'warn' : 'warn';
+        const text = String(a.text ?? '').trim();
+        if (!text) throw new Error('A report needs text.');
+        this.sendManagerReport(repo, { kind: kindWanted, severity, text, evidence: String(a.evidence ?? ''), action: String(a.action ?? '') }, Date.now());
+        return `Reported to the CEO from floor ${repo.floor}.`;
+      },
+    };
+    return createManagerTools(handlers);
+  }
+
+  /** Add a report to the CEO's inbox, bound the history, and wake the CEO (coalesced) if it is idle. */
+  private sendManagerReport(repo: PersistedRepo, draft: ReportDraft, now: number) {
+    const report: ManagerReportView = {
+      id: `r${this.state.reportSeq++}`,
+      repoId: repo.id,
+      floor: repo.floor,
+      kind: draft.kind,
+      severity: draft.severity,
+      text: draft.text.slice(0, 1200),
+      evidence: draft.evidence.slice(0, 600),
+      action: draft.action.slice(0, 400),
+      at: now,
+      updatedAt: now,
+      ackAt: null,
+    };
+    this.state.reports.push(report);
+    const cutoff = now - MAX_REPORT_AGE_MS;
+    if (this.state.reports.length > INBOX_MAX || this.state.reports.some((r) => r.at < cutoff)) {
+      this.state.reports = this.state.reports.filter((r) => r.at >= cutoff).slice(-INBOX_MAX);
+    }
+    repo.manager.lastReportAt = now;
+    this.emitManagerInbox();
+    this.maybeWakeCeo();
+    this.save();
+  }
+
+  /** Queue a reports job for the CEO when there are unacknowledged reports and none is already queued or running. */
+  private maybeWakeCeo() {
+    const c = this.state.ceo;
+    // A fresh report wakes the CEO at once; if an ack failed, the next report (at least the hourly one) retries it.
+    const fresh = this.state.reports.some((r) => r.ackAt == null && r.at > this.lastReportWakeAt);
+    const wake = shouldWakeCeo({
+      unacked: fresh ? 1 : 0,
+      jobKind: c.job?.kind ?? null,
+      queuedKinds: c.queue.map((j) => j.kind),
+    });
+    if (wake) {
+      this.lastReportWakeAt = Date.now();
+      this.enqueueCeo({ kind: 'reports', at: Date.now() });
+    }
+  }
+
+  /** The CEO's read_reports: the managers' inbox and the agenda, bounded. */
+  private readReports(a: { since?: number; limit?: number }): string {
+    const limit = Math.max(1, Math.min(50, Number(a.limit) || 20));
+    const since = Number(a.since) || 0;
+    const reports = [...this.state.reports]
+      .filter((r) => r.at >= since)
+      .sort((x, y) => y.at - x.at)
+      .slice(0, limit)
+      .map((r) => ({ id: r.id, floor: r.floor, repoId: r.repoId, kind: r.kind, severity: r.severity, at: r.at, acked: r.ackAt != null, text: r.text, evidence: r.evidence, action: r.action }));
+    const agenda = openAgenda(this.state.agenda).map((x) => ({ id: x.id, text: x.text, dueAt: x.dueAt, createdBy: x.createdBy }));
+    return JSON.stringify({ unacked: this.state.reports.filter((r) => r.ackAt == null).length, reports, agenda }, null, 1);
+  }
+
+  /** The CEO's ack_report: mark a report handled so it stops waking the CEO. */
+  private ackReport(a: { id: string }): string {
+    const r = this.state.reports.find((x) => x.id === a.id);
+    if (!r) throw new Error(`No report ${a.id}.`);
+    if (r.ackAt == null) {
+      r.ackAt = Date.now();
+      this.emitManagerInbox();
+      this.save();
+    }
+    return `Acknowledged report ${r.id}.`;
+  }
+
+  /** The CEO's add_agenda: keep something for the next hourly review or a stated due time. */
+  private addAgenda(a: { text: string; due_at?: number }): string {
+    const text = String(a.text ?? '').trim().slice(0, 300);
+    if (!text) throw new Error('An agenda item needs text.');
+    const dueAt = Number.isFinite(Number(a.due_at)) ? Number(a.due_at) : null;
+    const item: ManagerAgendaView = { id: crypto.randomUUID(), text, dueAt: dueAt && dueAt > 0 ? dueAt : null, createdAt: Date.now(), createdBy: 'ceo', doneAt: null };
+    this.state.agenda = compactAgenda([...this.state.agenda, item]);
+    this.emitManagerInbox();
+    this.save();
+    return `Added agenda item ${item.id}.`;
+  }
+
+  /** The CEO's clear_agenda: an item stops coming up. Nothing is deleted. */
+  private clearAgenda(a: { id: string }): string {
+    if (!this.state.agenda.some((x) => x.id === a.id)) throw new Error(`No agenda item ${a.id}.`);
+    this.state.agenda = compactAgenda(clearAgendaItem(this.state.agenda, a.id, Date.now()));
+    this.emitManagerInbox();
+    this.save();
+    return `Cleared agenda item ${a.id}.`;
+  }
+
+  /** Toggle a floor manager on/off (manager console / settings). */
+  setManager(repoId: string, patch: { enabled?: boolean; cli?: AgentCli | ''; model?: string; effort?: EffortLevel | '' }) {
+    const repo = this.repo(repoId);
+    const m = repo.manager;
+    if (patch.enabled !== undefined) m.enabled = !!patch.enabled;
+    if (patch.cli !== undefined) m.cli = isCli(patch.cli) ? patch.cli : '';
+    if (patch.model !== undefined) m.model = String(patch.model).slice(0, 60);
+    if (patch.effort !== undefined) m.effort = EFFORTS.includes(patch.effort as EffortLevel) ? (patch.effort as EffortLevel) : '';
+    this.emitManager(repo);
+    this.save();
+    return this.managerView(repo);
+  }
+
   // ---------- the CEO ----------
 
   private ceo() {
@@ -3958,7 +4465,7 @@ export class Swarm {
     // that fires while one is in flight (the heartbeat, or a burst of reports) would otherwise stack up reviews of the
     // same unchanged company. One running or queued review is enough.
     if (job.kind === 'review' && (this.state.ceo.job?.kind === 'review' || q.some((j) => j.kind === 'review'))) return;
-    const same = q.findIndex((j) => j.kind === job.kind && (job.kind === 'review' || job.kind === 'chat' || (j.repoId === job.repoId && j.prNumber === job.prNumber)));
+    const same = q.findIndex((j) => j.kind === job.kind && (job.kind === 'review' || job.kind === 'chat' || job.kind === 'reports' || (j.repoId === job.repoId && j.prNumber === job.prNumber)));
     if (same >= 0) q[same] = job.kind === 'chat' ? { ...q[same], text: `${q[same].text}\n${job.text}` } : job;
     else q.push(job);
     this.emitCeo();
@@ -3979,7 +4486,7 @@ export class Swarm {
     }
     if (!a || BUSY.includes(a.status) || c.job || c.queue.length === 0) return;
     if (this.slotsFull()) return;
-    const rank: Record<CeoJob['kind'], number> = { chat: 0, triage: 0, onboard: 1, plan: 1, review: 2 };
+    const rank: Record<CeoJob['kind'], number> = { chat: 0, triage: 0, reports: 0, onboard: 1, plan: 1, review: 2 };
     // A floor's jobs wait for its clone and first sync, so the CEO has something to read.
     const ready = (j: CeoJob) => {
       const rt = j.repoId ? this.repoRt.get(j.repoId) : undefined;

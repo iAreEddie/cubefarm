@@ -209,7 +209,7 @@ export interface LaunchContext {
   resumeId?: string;
   sessionId: string; // the id the office gives a new Claude Code session
   name: string; // shown in Claude Code's prompt box and the terminal title
-  role: 'agent' | 'ceo';
+  role: 'agent' | 'ceo' | 'manager';
   additionalDirectories: string[];
   /** Files the office wrote for this session (settings, MCP config, instructions). */
   files: { settings: string; mcp: string | null; system: string };
@@ -332,7 +332,8 @@ export const CROSS_TURN_TOOLS = ['Monitor', 'ScheduleWakeup', 'CronCreate', 'Cro
 export function launchArgs(id: AgentCli, ctx: LaunchContext): Launch {
   switch (id) {
     case 'claude': {
-      const disallowed = ['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode', ...CROSS_TURN_TOOLS, ...(ctx.role === 'ceo' ? ['Bash', 'PowerShell', 'NotebookEdit'] : [])];
+      const noShell = ctx.role === 'ceo' || ctx.role === 'manager';
+      const disallowed = ['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode', ...CROSS_TURN_TOOLS, ...(noShell ? ['Bash', 'PowerShell', 'NotebookEdit'] : []), ...(ctx.role === 'manager' ? ['Write', 'Edit'] : [])];
       const args = [
         ...(ctx.resumeId ? ['--resume', ctx.resumeId] : ['--session-id', ctx.sessionId]),
         ...(ctx.model ? ['--model', ctx.model] : []),
