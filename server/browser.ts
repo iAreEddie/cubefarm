@@ -27,15 +27,50 @@ export function playwrightMcpCli(): string | null {
  * The MCP server command: node on the CLI script, each path its own argument (no shell, so spaces need no quoting).
  * browser-init.js keeps pages from taking the real mouse with pointer lock (headless Chrome does on Windows).
  * `outputDir` gets snapshots and unnamed screenshots (the terminal runtime collects them from there).
+ *
+ * With `configFile` the browser keeps a profile on disk and opens a loopback CDP port, so the office can watch the
+ * agent's own browser (#16). Without one it stays in-memory (`--isolated`), exactly as before.
  */
-export function playwrightMcpCommand(cli: string, initScript: string, outputDir?: string, node = process.execPath): McpCommand {
-  return { command: node, args: [cli, '--headless', '--isolated', ...(outputDir ? ['--output-dir', outputDir] : []), '--init-script', initScript] };
+export function playwrightMcpCommand(cli: string, initScript: string, outputDir?: string, node = process.execPath, configFile?: string): McpCommand {
+  const profile = configFile ? ['--config', configFile] : ['--isolated'];
+  return { command: node, args: [cli, '--headless', ...profile, ...(outputDir ? ['--output-dir', outputDir] : []), '--init-script', initScript] };
 }
 
 /** The office's Playwright MCP server for a session, or null when the pinned package can't be found. */
-export function playwrightMcp(outputDir?: string): McpCommand | null {
+export function playwrightMcp(outputDir?: string, configFile?: string): McpCommand | null {
   const cli = playwrightMcpCli();
-  return cli ? playwrightMcpCommand(cli, path.join(import.meta.dirname, 'browser-init.js'), outputDir) : null;
+  return cli ? playwrightMcpCommand(cli, path.join(import.meta.dirname, 'browser-init.js'), outputDir, process.execPath, configFile) : null;
+}
+
+/**
+ * The MCP's browser config for a session whose browser the office watches (#16): a profile folder of its own (removed
+ * with the session) and a loopback-only CDP port Chrome picks itself and records in the profile's DevToolsActivePort.
+ * Playwright still launches and owns the browser; the office only attaches over CDP to screencast it, read-only.
+ */
+export function browserWatchingConfig(profileDir: string): Record<string, unknown> {
+  return { browser: { isolated: false, userDataDir: profileDir, launchOptions: { args: ['--remote-debugging-port=0'] } } };
+}
+
+/** Writes that config beside the session and returns its path, for `playwrightMcp`. */
+export function writeBrowserWatchingConfig(dir: string, profileDir: string): string {
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, 'playwright-watch.json');
+  fs.writeFileSync(file, JSON.stringify(browserWatchingConfig(profileDir), null, 2));
+  return file;
+}
+
+/**
+ * playwright-core as the pinned MCP itself uses it, so the office's CDP attach matches the MCP's browser exactly.
+ * Resolved from @playwright/mcp's own folder (its direct dependency), whatever npm did with hoisting; null when the
+ * package or playwright-core isn't installed.
+ */
+export function playwrightCore(): typeof import('playwright-core') | null {
+  try {
+    const pkg = createRequire(import.meta.url).resolve('@playwright/mcp/package.json');
+    return createRequire(pkg)('playwright-core') as typeof import('playwright-core');
+  } catch {
+    return null;
+  }
 }
 
 /** Where Playwright's "chrome" channel looks for Google Chrome (bin/cubefarm.js doctor checks the same places). */

@@ -12,6 +12,7 @@ import { MessageBox } from './MessageBox';
 import { MicButton } from './MicButton';
 import { closeOverlay, Panel } from './Panel';
 import { loadScreenshot } from '../screenshot';
+import { LivePlaytest } from './LivePlaytest';
 import { toolVerb } from '../world/draw';
 import { followAgent } from '../world/camera/rig';
 
@@ -47,6 +48,16 @@ export function TerminalView({ agentId }: { agentId: string }) {
   const [busy, setBusy] = useState(false);
   const [showSetup, setShowSetup] = useState(false);
   const [showCareer, setShowCareer] = useState(false);
+  // A browser-testing agent gets a Live playtest tab (#16); clicking its desk opens on it while its browser is active.
+  const liveActive = agent ? agent.live === 'waiting' || agent.live === 'live' || agent.live === 'reconnecting' : false;
+  const liveAvailable = !!agent && !!repo && (repo.browserTesting || agent.live !== 'off');
+  const [pane, setPane] = useState<'terminal' | 'live'>(liveActive ? 'live' : 'terminal');
+  const shownAgent = useRef(agentId);
+  useEffect(() => {
+    if (shownAgent.current === agentId) return;
+    shownAgent.current = agentId;
+    setPane(liveActive ? 'live' : 'terminal');
+  }, [agentId, liveActive]);
   const [, tick] = useState(0);
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
@@ -197,35 +208,50 @@ export function TerminalView({ agentId }: { agentId: string }) {
         </div>
       )}
 
-      <div className={`term-split ${agent.hasScreenshot ? 'term-split-2' : ''}`}>
-        {agent.terminal ? (
-          <LiveTerminal agentId={agent.id} />
-        ) : (
-          <div
-            className="term"
-            ref={scroller}
-            onScroll={(e) => {
-              const el = e.currentTarget;
-              stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-            }}
-          >
-            {log.length === 0 && <div className="term-line term-system">(no output yet)</div>}
-            {log.map((l) => (
-              <div key={l.id} className={`term-line term-${l.kind}`}>
-                {l.text || ' '}
-              </div>
-            ))}
-            {working && <div className="term-line term-spin">✻ {agent.status === 'preparing' ? (agent.currentTool ?? 'Setting up worktree') : toolVerb(agent.currentTool) || 'Thinking'}… ({elapsed(agent.startedAt, null)})</div>}
-          </div>
-        )}
-        {agent.hasScreenshot && (
-          <div className="browser">
-            <div className="browser-bar">🔒 {agent.browserUrl ?? 'about:blank'}</div>
-            <div className="browser-view" ref={shotView} />
-            <div className="muted small">Latest Playwright screenshot{agent.screenshotAt ? ` · ${new Date(agent.screenshotAt).toLocaleTimeString()}` : ''}</div>
-          </div>
-        )}
-      </div>
+      {liveAvailable && (
+        <div className="term-tabs" role="tablist" aria-label="Terminal and live playtest">
+          <button role="tab" aria-selected={pane === 'terminal'} className={`tab ${pane === 'terminal' ? 'tab-on' : ''}`} onClick={() => setPane('terminal')}>
+            ⌨️ Terminal &amp; log
+          </button>
+          <button role="tab" aria-selected={pane === 'live'} className={`tab ${pane === 'live' ? 'tab-on' : ''}`} onClick={() => setPane('live')}>
+            🖥️ Live playtest{agent.live === 'live' ? ' ●' : ''}
+          </button>
+        </div>
+      )}
+
+      {liveAvailable && pane === 'live' ? (
+        <LivePlaytest agent={agent} repo={repo} />
+      ) : (
+        <div className={`term-split ${agent.hasScreenshot ? 'term-split-2' : ''}`}>
+          {agent.terminal ? (
+            <LiveTerminal agentId={agent.id} />
+          ) : (
+            <div
+              className="term"
+              ref={scroller}
+              onScroll={(e) => {
+                const el = e.currentTarget;
+                stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+              }}
+            >
+              {log.length === 0 && <div className="term-line term-system">(no output yet)</div>}
+              {log.map((l) => (
+                <div key={l.id} className={`term-line term-${l.kind}`}>
+                  {l.text || ' '}
+                </div>
+              ))}
+              {working && <div className="term-line term-spin">✻ {agent.status === 'preparing' ? (agent.currentTool ?? 'Setting up worktree') : toolVerb(agent.currentTool) || 'Thinking'}… ({elapsed(agent.startedAt, null)})</div>}
+            </div>
+          )}
+          {agent.hasScreenshot && (
+            <div className="browser">
+              <div className="browser-bar">🔒 {agent.browserUrl ?? 'about:blank'}</div>
+              <div className="browser-view" ref={shotView} />
+              <div className="muted small">Latest saved Playwright screenshot{agent.screenshotAt ? ` · ${new Date(agent.screenshotAt).toLocaleTimeString()}` : ''}</div>
+            </div>
+          )}
+        </div>
+      )}
 
       <form
         className="term-input"

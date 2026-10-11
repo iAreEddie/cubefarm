@@ -43,6 +43,7 @@ import { envSecrets, Journal } from './journal.ts';
 import { sampleDay, seeded } from './journalSample.ts';
 import { addTenure, apply as applyLedger, buy as buyDecor, emptyLedger, grant as grantCoins, loadLedger, place as placeDecor, progressView, type CommandResult, type Effects, type LedgerEvent, type LedgerState } from './ledger.ts';
 import { AgentTerminal } from './terminal.ts';
+import { demoLiveBackend, LiveCaptureHub, realLiveBackend, type LiveSink } from './liveCapture.ts';
 import { Ticker } from './ticker.ts';
 import { Outbox } from './outbox.ts';
 import { DEFAULT_LISTEN, DEFAULT_VOICE, listenSettings, speaks, Voice, voiceSettings } from './voice.ts';
@@ -571,9 +572,15 @@ export class Swarm {
   private readonly envSecrets = envSecrets(process.env);
   /** Notifications to the manager's devices and chat apps (docs/pocket.md). The demo's only log what they'd send. */
   readonly notifier: Notifier;
+  /** Watching the agents' own test browsers live (#16): one CDP capture per agent, only while someone watches. */
+  readonly live: LiveCaptureHub;
   private toldStuck = new Set<string>(); // `${agentId}:${endedAt}`: agents in an error the manager was notified about
 
   constructor(private backend: Backend) {
+    this.live = new LiveCaptureHub(backend.demo ? demoLiveBackend() : realLiveBackend(), (agentId) => {
+      const a = this.state.agents.find((x) => x.id === agentId);
+      if (a) this.emitAgent(a);
+    });
     this.weather = new WeatherService({
       api: backend.weather,
       file: path.join(HOME_DIR, backend.demo ? 'demo-weather.json' : 'weather.json'),
@@ -1012,6 +1019,7 @@ export class Swarm {
       browserUrl: rt.browserUrl,
       hasScreenshot: !!rt.screenshot,
       screenshotAt: rt.screenshot?.at ?? null,
+      live: this.live.status(a.id),
       lastError: a.lastError,
       career: a.role === 'ceo' ? null : (this.state.progress.careers[a.id] ?? null),
       log: withLog ? rt.log : [],
@@ -1088,6 +1096,11 @@ export class Swarm {
   screenshot(agentId: string) {
     const rt = this.agentRt.get(agentId);
     return rt ? rt.screenshot : undefined;
+  }
+
+  /** Watch an agent's live test browser (#16), for /ws/live. Returns the unsubscribe. */
+  watchLive(agentId: string, sink: LiveSink): () => void {
+    return this.live.watch(agentId, sink);
   }
 
   // ---------- clients ----------
@@ -1751,6 +1764,7 @@ export class Swarm {
    * through a restart (the terminal keeper holds them for the next start) and stop when the office quits.
    */
   async shutdown(restart = false): Promise<void> {
+    this.live.stopAll();
     await this.writeState().catch((err) => console.warn('could not save the state', err));
     await this.journal.close().catch((err) => console.warn('could not write the journal', err));
     await this.backend.releaseClis(restart); // before the terminals are saved: whatever they print next waits in the keeper
@@ -2200,6 +2214,7 @@ export class Swarm {
     this.state.agents = this.state.agents.filter((x) => x.id !== id);
     applyLedger(this.state.progress, { kind: 'let-go', agentId: id });
     this.agentRt.delete(id);
+    this.live.drop(id);
     this.seenActivity.delete(id);
     this.shownActivity.delete(id);
     this.save();
@@ -2568,6 +2583,9 @@ export class Swarm {
     this.activity.set(a.id, Date.now());
     const how = this.sessionRuntime(a, resumeSessionId);
     this.emitAgent(a);
+    // The demo's fake sessions never start a real browser, so begin their watchable one here; real sessions begin when
+    // their runner reports the browser's profile (liveBrowser below).
+    if (repo.browserTesting && this.backend.demo) this.live.begin(a.id, { demo: true, label: a.name });
     const active = (entries: LogEntry[]) => {
       if (entries.some((e) => e.kind !== 'manager')) this.activity.set(a.id, Date.now());
     };
@@ -2611,6 +2629,7 @@ export class Swarm {
           rt.browserUrl = url;
           this.emitAgent(a);
         },
+        liveBrowser: (profileDir) => this.live.begin(a.id, { demo: this.backend.demo, profileDir, label: a.name }),
         screenshot: (data, mime) => {
           const at = Date.now();
           rt.screenshot = { data, mime, at };
@@ -2637,6 +2656,7 @@ export class Swarm {
     rt.session = null;
     rt.currentTool = null;
     a.endedAt = Date.now();
+    this.live.end(a.id); // the browser may still be up; stop watching and keep the last frame labelled as ended
     a.costUsd += result.costUsd;
     a.turns += result.turns;
     recordCost(this.state.ops, repo.id, result.costUsd, a.endedAt);
@@ -4617,6 +4637,7 @@ export class Swarm {
       const session = rt.session;
       rt.session = null;
       rt.currentTool = null;
+      this.live.drop(a.id);
       this.silenced.add(a.id);
       session?.stop();
       this.silenced.delete(a.id);

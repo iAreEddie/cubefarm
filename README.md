@@ -60,7 +60,7 @@ More in [How it works](docs/how-it-works.md#agents-terminals).
 ### The work
 
 - **Floors**: one per project. Ride the elevator between them.
-- **Desks**: walk up behind an agent to watch their monitor, and open it for their real terminal, which you can type into. It also shows a live browser when they test the UI. The ⚙️ Setup in their panel changes their name, look, coding agent, model and effort, and "What they're told" shows the prompts the office gives them for each kind of task.
+- **Desks**: walk up behind an agent to watch their monitor, and open it for their real terminal, which you can type into. It also **live-streams their browser** while they test the UI, right in their panel (see [Live playtest](docs/live-playtest.md)). The ⚙️ Setup in their panel changes their name, look, coding agent, model and effort, and "What they're told" shows the prompts the office gives them for each kind of task.
 - **The whiteboard**: the Kanban board, from backlog to merged. Aim at a sticky and press `E` to read it up close, or peel a Backlog sticky off with `G` and carry it to a free agent's desk to hand them the issue (a pull request sticky asks them to test it). Red strings join issues to the ones they depend on, and the corner counts today's merges, the issue-to-merge time, the QA queue and anything that needs you.
 - **Who's doing what**: a sign over each busy agent says what they're on (📖 reading, ✏️ editing, 🧪 testing, 🌐 browsing, 🐙 git, ⏳ CI, 🔍 QA, 🔧 fixing). Keep someone in your sights for a moment for a card with their task, last steps and cost so far, and an LED ticker over the whiteboard scrolls the floor's news.
 - **The lobby**: the manager's office, where you connect projects, meet new agents, file issues and change settings, and the CEO's corner office.
@@ -157,6 +157,7 @@ Running it from a clone of this repo (`npm start`)? Then the office updates itse
 - [Agents](docs/agents.md): interchangeable agents, team sizes and the CEO's team changes, each agent's machine and how it signs in
 - [The office in your pocket](docs/pocket.md): pocket mode on your phone, installing the app, notifications (desktop, push, ntfy) and reaching the office safely from your phone
 - [Voice messages](docs/voice.md): the CEO's messages read aloud, ElevenLabs voices and talking instead of typing
+- [Live playtest](docs/live-playtest.md): watch an agent's own browser in their panel, live, while they test the UI
 - [Contributing](CONTRIBUTING.md): run it from source, tests, architecture and publishing
 
 ## License

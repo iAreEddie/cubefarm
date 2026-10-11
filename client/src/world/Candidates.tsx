@@ -65,6 +65,7 @@ function candidateAgent(r: HireRequestView): Agent {
     browserUrl: null,
     hasScreenshot: false,
     screenshotAt: null,
+    live: 'off',
     lastError: null,
     career: null,
   };

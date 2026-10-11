@@ -56,6 +56,7 @@ const BASE: Agent = {
   browserUrl: null,
   hasScreenshot: false,
   screenshotAt: null,
+  live: 'off',
   lastError: null,
   style: null,
   career: null,

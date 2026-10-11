@@ -5,7 +5,8 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Request, Response } from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { browserProblem, playwrightMcp } from './browser.ts';
+import { browserProblem, playwrightMcp, writeBrowserWatchingConfig } from './browser.ts';
+import { profileDirFor } from './liveCapture.ts';
 import { HOME_DIR } from './config.ts';
 import { cliLabel, CODEX_HOOK_SOURCE, codexConfigToml, codexThread, commandFor, hookReviewKey, interruptions, isCli, launchArgs, lostCodexSession, NOTIFY_SOURCE, OPENCODE_PLUGIN_SOURCE, officeMcpNodePath, officeMcpSource, opencodeUsesAuto, STATUSLINE_SOURCE, trustKey } from './clis.ts';
 import { adoptPty, discardPty, hooksReady, keeperHookUrl, keeperPid, leaveKeeper, spawnPty, startKeeper, terminalsAvailable, type Pty } from './ptyClient.ts';
@@ -665,6 +666,8 @@ export function startCliSession(opts: SessionOptions, callbacks: SessionCallback
     if (opts.typed || opts.reattach) busy(); // typed at the prompt, or still at it after a restart: already running
     else handle.send(opts.prompt);
     shotTimer = setInterval(collectShots, 2000);
+    // The browser (and its MCP) outlived the office with the CLI; the office watches the same profile again (#16).
+    if (opts.browserTesting) cb.liveBrowser?.(profileDirFor(path.join(live.dir, 'browser')));
     return handle;
   }
   if (opts.reattach) {
@@ -686,7 +689,19 @@ export function startCliSession(opts: SessionOptions, callbacks: SessionCallback
   const keeper = keeperHookUrl();
   const hookUrl = `${keeper ?? officeUrl}/api/hooks/${token}`;
   // The browser for a session. Its snapshots and unnamed screenshots go to the session's folder, not the worktree.
-  const browser = opts.browserTesting ? playwrightMcp(path.join(dir, 'browser')) : null;
+  // #16: a profile on disk and a loopback CDP port, so the office can watch this session's own browser; the MCP still
+  // launches and owns it. The profile lives inside the session folder, so it goes when the session folder does.
+  let configFile: string | undefined;
+  if (opts.browserTesting) {
+    try {
+      const profileDir = profileDirFor(path.join(dir, 'browser'));
+      configFile = writeBrowserWatchingConfig(dir, profileDir);
+      cb.liveBrowser?.(profileDir);
+    } catch {
+      // no profile: the browser still works, it just can't be watched
+    }
+  }
+  const browser = opts.browserTesting ? playwrightMcp(path.join(dir, 'browser'), configFile) : null;
   const browserIssue = opts.browserTesting ? browserProblem(browser) : null;
   if (browserIssue) log([{ kind: 'error', text: browserIssue }]);
   let prompt = opts.prompt;

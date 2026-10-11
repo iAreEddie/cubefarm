@@ -338,17 +338,25 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
 });
 
 const server = http.createServer(app);
-// Two sockets: /ws carries the office's state to every tab, /ws/term?agent=<id> one agent's terminal to whoever opened it.
+// The office's sockets: /ws carries the office's state to every tab, /ws/term?agent=<id> one agent's terminal, and
+// /ws/live?agent=<id> that agent's browser frames, each to whoever opened it.
 const wss = new WebSocketServer({ noServer: true });
 const terms = new WebSocketServer({ noServer: true });
+// Watching an agent's own browser live (#16): frames only, never mixed into the snapshot/log channels.
+const lives = new WebSocketServer({ noServer: true });
 wss.on('connection', (ws) => {
   swarm.addClient(ws);
   presence.attach(ws);
 });
 terms.on('connection', (ws, req) => swarm.attachTerminal(new URL(req.url ?? '', 'http://localhost').searchParams.get('agent') ?? '', ws));
+lives.on('connection', (ws, req) => {
+  const stop = swarm.watchLive(new URL(req.url ?? '', 'http://localhost').searchParams.get('agent') ?? '', ws);
+  ws.on('close', stop);
+  ws.on('error', stop);
+});
 server.on('upgrade', (req, socket, head) => {
   const { pathname } = new URL(req.url ?? '', 'http://localhost');
-  const target = pathname === '/ws' ? wss : pathname === '/ws/term' ? terms : null;
+  const target = pathname === '/ws' ? wss : pathname === '/ws/term' ? terms : pathname === '/ws/live' ? lives : null;
   if (!target) return void socket.destroy();
   target.handleUpgrade(req, socket, head, (ws) => target.emit('connection', ws, req));
 });

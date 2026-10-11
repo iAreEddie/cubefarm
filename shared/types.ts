@@ -215,6 +215,22 @@ export type TermServerMessage =
 /** Browser to server: keystrokes go to the running CLI; the size is the viewer's fitted terminal. */
 export type TermClientMessage = { t: 'input'; data: string } | { t: 'resize'; cols: number; rows: number };
 
+/**
+ * How an agent's live playtest browser stands (server/liveCapture.ts). off: no browser-testing session · waiting: one is
+ * starting and its browser hasn't been seen yet · live: attached to the agent's own browser · reconnecting: it went
+ * away and is being picked up again · ended: the session finished (its last frame may stay, labelled) · unavailable:
+ * capture isn't possible here (no Chrome, or the attach failed).
+ */
+export type LivePlaytestStatus = 'off' | 'waiting' | 'live' | 'reconnecting' | 'ended' | 'unavailable';
+
+/**
+ * Messages on an agent's live playtest socket (/ws/live?agent=<id>), server to browser. Read-only: the browser never
+ * sends anything back. `session` is the capture's own id, so a frame from a previous task is never shown as live.
+ */
+export type LiveServerMessage =
+  | { t: 'state'; status: LivePlaytestStatus; url: string | null; session: number }
+  | { t: 'frame'; data: string; mime: string; at: number; session: number };
+
 export interface AgentView {
   id: string;
   name: string;
@@ -245,6 +261,8 @@ export interface AgentView {
   browserUrl: string | null;
   hasScreenshot: boolean;
   screenshotAt: number | null;
+  /** Whether this agent's own test browser can be watched live, and how it stands (server/liveCapture.ts). */
+  live: LivePlaytestStatus;
   lastError: string | null;
   career: CareerView | null; // their record on the team (#226); null for the CEO
   log: LogLine[]; // the terminal log: hiring answers with it; snapshots leave it empty (tabs get lines by watch, shared/watch.ts)
