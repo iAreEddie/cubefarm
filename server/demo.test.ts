@@ -109,12 +109,20 @@ describe('demo pull request fixtures', () => {
     const backend = createDemoBackend();
     const issues = await backend.listIssues('demo-co/weather-api');
     const pulls = (await backend.listPulls('demo-co/weather-api')).filter((p) => p.state === 'OPEN');
-    expect(pulls.length).toBeGreaterThanOrEqual(3);
+    expect(pulls.length).toBeGreaterThanOrEqual(4);
 
-    const linked = pulls.find((p) => p.closesIssues.length > 0)!;
+    // The long linked PR: its body is its own, not the issue's, and it is long enough to scroll.
+    const linked = pulls.find((p) => p.body.includes('START-PR-A'))!;
     const issue = issues.find((i) => i.number === linked.closesIssues[0])!;
-    expect(linked.body.trim()).not.toBe('');
     expect(linked.body).not.toBe(issue.body); // the card shows the PR's own body, not the issue's
+    expect(linked.body).toContain('END-PR-A');
+
+    // A second long linked PR, so a card test can switch between two tall descriptions.
+    expect(pulls.find((p) => p.body.includes('START-PR-C'))!.closesIssues.length).toBeGreaterThan(0);
+
+    // A linked PR with no body at all: a PR card must not fall back to its issue's body.
+    const emptyLinked = pulls.find((p) => p.closesIssues.length > 0 && p.body.trim() === '')!;
+    expect(issues.find((i) => i.number === emptyLinked.closesIssues[0])!.body.trim()).not.toBe('');
 
     const noIssue = pulls.find((p) => p.closesIssues.length === 0)!;
     expect(noIssue.body.trim()).not.toBe('');

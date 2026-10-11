@@ -53,11 +53,9 @@ export function CardView({ repoId, cardKey, number, pr }: { repoId: string; card
   const open = new Set(repo.issues.map((i) => i.number));
   const waits = issue ? blockers(issue.body, open) : [];
   const waiters = issue ? repo.issues.filter((i) => blockers(i.body, open).includes(issue.number)).map((i) => i.number) : [];
-  // A PR card shows the PR's own body; the linked issue's body is only a fallback when the PR has none. An issue card
-  // shows its own body. This is why the server carries the PR body at all (#25).
-  const prBody = pull?.body?.trim() ?? '';
-  const issueBody = issue?.body?.trim() ?? '';
-  const description = prBody || issueBody;
+  // A PR card shows the pull request's own body, never the linked issue's (the issue body belongs to the issue card);
+  // an issue card shows its own body. This is why the server carries the PR body at all (#25).
+  const description = ((pull ? pull.body : issue?.body) ?? '').trim();
   const url = card.url ?? pull?.url ?? issue?.url;
 
   return (
@@ -96,7 +94,7 @@ export function CardView({ repoId, cardKey, number, pr }: { repoId: string; card
           <Markdown text={description} />
         </div>
       ) : (
-        <p className="muted small">{pull ? 'This pull request has no description.' : 'The issue has no description.'}</p>
+        <p className="muted small">{card.prNumber ? 'This pull request has no description.' : 'The issue has no description.'}</p>
       )}
 
       {card.prNumber && <PrDetails card={card} pull={pull} />}

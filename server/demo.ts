@@ -154,13 +154,16 @@ function longPrBody(marker: string, title: string): string {
   return lines.join('\n');
 }
 
-// Deterministic pull requests on floor 2, for the board and its card window: one closes an issue (its PR body differs
-// from that issue's body), one closes nothing, and a second closes another issue (so a test can switch between two).
+// Deterministic pull requests on floor 2, for the board and its card window: two long ones that close an issue (their
+// PR bodies differ from that issue's body), one that closes nothing, and one with an empty body that closes an issue
+// (so a card test can prove a PR never falls back to its linked issue's body). The long bodies carry START/END markers
+// the e2e spec looks for.
 {
   const r = repos.get('demo-co/weather-api')!;
   seededPull(r, r.nextNumber++, 'Add a precipitation layer', longPrBody('PR-A', 'Precipitation layer'), [1]);
   seededPull(r, r.nextNumber++, 'Refactor the response cache', '# Response cache\n\nCaches `/forecast` responses for 60 seconds. This pull request closes no issue at all.', []);
-  seededPull(r, r.nextNumber++, 'Document the rate-limit responses', '# Rate limits\n\nAdds the 429 response to the OpenAPI document. This is the second card to switch to.', [2]);
+  seededPull(r, r.nextNumber++, 'Document the rate-limit responses', longPrBody('PR-C', 'Rate limits'), [2]);
+  seededPull(r, r.nextNumber++, 'Bump the anonymous request budget', '', [3]);
 }
 
 // ---------- the big company (--floors / --agents, #228) ----------

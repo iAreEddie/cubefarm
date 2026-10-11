@@ -63,13 +63,14 @@ async function state(page: Page) {
   return { repo, ...fixtures(repo) };
 }
 
-/** The demo's deterministic floor-2 PRs: A is long and closes an issue, B closes nothing, C is for switching to. */
+/** The demo's deterministic floor-2 PRs: A and C are long and close an issue, B closes nothing, D has no body. */
 function fixtures(repo: StateRepo) {
   const open = repo.pulls.filter((p) => p.state === 'OPEN');
   return {
     prA: open.find((p) => p.body.includes('START-PR-A'))!,
     prB: open.find((p) => p.closesIssues.length === 0)!,
-    prC: open.find((p) => p.body.includes('second card to switch to'))!,
+    prC: open.find((p) => p.body.includes('START-PR-C'))!,
+    prD: open.find((p) => p.closesIssues.length > 0 && p.body.trim() === '')!,
   };
 }
 
@@ -89,7 +90,7 @@ const marker = () => `m${Date.now()}${seq++}`;
 test('a long issue and PR description scroll first line to last, and the card switches, closes and returns focus', async ({ page }) => {
   await startAt(page, SPOT);
   await enterOffice(page);
-  const { repo, prA, prB, prC } = await state(page);
+  const { repo, prA, prB, prC, prD } = await state(page);
   const panel = page.locator('.cardview');
   const body = page.locator('.cardview .panel-body');
 
@@ -145,12 +146,27 @@ test('a long issue and PR description scroll first line to last, and the card sw
   await expect(page.getByText(/closes no issue at all/)).toBeVisible();
   await expect(panel.locator('.cardview-h', { hasText: 'Closes #' })).toHaveCount(0);
 
-  // --- Switching to another PR shows its own description, not the last one's. ---
-  await expect.poll(() => openCard(page, `pr-${prC.number}`), { message: `open pr-${prC.number}`, timeout: 30_000 }).toBe(true);
-  await expect(page.getByText(/second card to switch to/)).toBeVisible();
-  await expect(page.getByText('START-PR-A')).toHaveCount(0);
+  // --- A linked PR with an empty body says so; it never falls back to the linked issue's body. ---
+  await expect.poll(() => openCard(page, `pr-${prD.number}`), { message: `open pr-${prD.number}`, timeout: 30_000 }).toBe(true);
+  await expect(page.getByText('This pull request has no description.')).toBeVisible();
+  const linkedD = repo.issues.find((i) => i.number === prD.closesIssues[0])!;
+  await expect(page.getByText(linkedD.body.trim())).toHaveCount(0); // the linked issue's body is not shown
+  await expect(panel.locator('.cardview-h', { hasText: `Closes #${linkedD.number}` })).toBeVisible();
 
-  await page.keyboard.press('Escape');
+  // --- Switching to another tall PR shows its own description and starts at the top, not the last offset. ---
+  await expect.poll(() => openCard(page, `pr-${prC.number}`), { message: `open pr-${prC.number}`, timeout: 30_000 }).toBe(true);
+  await expect(page.getByText('START-PR-C')).toHaveCount(1);
+  await expect(page.getByText('START-PR-A')).toHaveCount(0);
+  expect(await body.evaluate((el) => el.scrollTop)).toBe(0);
+  await toEnd(body);
+  await expect.poll(() => body.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+
+  await expect.poll(() => openCard(page, `pr-${prA.number}`), { message: `open pr-${prA.number} again`, timeout: 30_000 }).toBe(true);
+  await expect(page.getByText('START-PR-A')).toHaveCount(1);
+  expect(await body.evaluate((el) => el.scrollTop)).toBe(0); // a switched card starts at the top
+
+  // The close control is usable, not just visible.
+  await panel.locator('.panel-x').click();
   await expect(panel).toBeHidden();
 });
 
