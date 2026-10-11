@@ -60,8 +60,8 @@ export interface SessionResult {
   costUsd: number;
   /** Cost worked out from measured tokens and a verified rate (#15), kept out of the budget and shown apart. */
   estimatedUsd?: number;
-  /** Where `costUsd`/`estimatedUsd` came from: reported, estimated, free, or unavailable. */
-  costKind?: CostKind;
+  /** Where `costUsd`/`estimatedUsd` came from: reported, estimated, free, unavailable, or both (mixed). */
+  costKind?: CostKind | 'mixed';
   /** The session's normalized usage per message/model, for mission control's by-model detail (#15). */
   usage?: UsageRecord[];
   turns: number;
@@ -384,13 +384,15 @@ export function startSession(opts: SessionOptions, callbacks: SessionCallbacks):
     const modelUsage = (msg as unknown as { modelUsage?: unknown }).modelUsage;
     const summary = msg.subtype === 'success' ? summariseSession(parseClaudeSdkUsage(modelUsage, { sessionId: msg.session_id, cli: 'claude' })) : null;
     const reported = summary && summary.reportedUsd > 0 ? summary.reportedUsd : lastCost;
-    const estimated = summary && summary.reportedUsd > 0 ? 0 : (summary?.estimatedUsd ?? 0);
+    // Reported and estimated are independent: models the SDK priced and models it left unpriced coexist in one result.
+    const estimated = summary?.estimatedUsd ?? 0;
+    const kind = reported > 0 && estimated > 0 ? 'mixed' : reported > 0 ? 'reported' : estimated > 0 ? 'estimated' : (summary?.kind ?? 'unavailable');
     cb.finished({
       ok,
       text: msg.subtype === 'success' ? msg.result : '',
       costUsd: reported,
       estimatedUsd: estimated,
-      costKind: reported > 0 ? 'reported' : estimated > 0 ? 'estimated' : (summary?.kind ?? 'unavailable'),
+      costKind: kind,
       usage: summary?.records ?? [],
       turns: lastTurns,
       errors: msg.subtype === 'success' ? [] : msg.errors,

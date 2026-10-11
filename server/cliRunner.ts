@@ -396,6 +396,37 @@ export function cliFinished(opts: {
   return opts.elapsedMs > CLEAN_EXIT_MIN_MS;
 }
 
+/**
+ * The cost of a finished terminal session (#15): the provider's reported figure and the token-based estimate kept
+ * apart, because a session can have both — OpenCode reports each message's cost, yet a model it had no rate for comes
+ * back as a zero placeholder the office estimates. `lastModel` is the model Claude's status-line total is attributed
+ * to. A session with neither is unavailable, never a zero.
+ */
+export function cliCostSummary(opts: { cli: string; sessionId: string; records: UsageRecord[]; reportedUsd: number; lastModel?: string }): Pick<SessionResult, 'costUsd' | 'estimatedUsd' | 'costKind' | 'usage'> {
+  const records = [...opts.records];
+  if (opts.cli === 'claude' && opts.reportedUsd > 0) {
+    const model = opts.lastModel || 'claude';
+    records.push({
+      key: `claude:${opts.sessionId}:session`,
+      sessionId: opts.sessionId,
+      scope: 'session',
+      at: Date.now(),
+      provider: 'claude',
+      model: modelKey(model),
+      modelRaw: model,
+      cli: 'claude',
+      usage: { uncachedInput: null, cachedInput: null, cacheWriteInput: null, output: null, reasoning: null, reasoningIncludedInOutput: true },
+      reportedUsd: opts.reportedUsd,
+      source: 'claude-statusline',
+    });
+  }
+  const summary = summariseSession(records);
+  const reported = summary.reportedUsd > 0 ? summary.reportedUsd : opts.cli === 'claude' ? opts.reportedUsd : 0;
+  const estimated = summary.estimatedUsd;
+  const kind = reported > 0 && estimated > 0 ? 'mixed' : reported > 0 ? 'reported' : estimated > 0 ? 'estimated' : summary.records.length ? summary.kind : 'unavailable';
+  return { costUsd: reported, estimatedUsd: estimated, costKind: kind, usage: summary.records };
+}
+
 export function startCliSession(opts: SessionOptions, callbacks: SessionCallbacks): SessionHandle {
   const term = opts.terminal!;
   // A follow-up to the session a CLI is still waiting in picks that CLI up again, and so does an office that restarted
@@ -485,30 +516,8 @@ export function startCliSession(opts: SessionOptions, callbacks: SessionCallback
    * the estimate stays separate. Never a zero unless the usage genuinely was free or nothing was measured — an
    * unmeasured session is unavailable, not free.
    */
-  const costSummary = (): Pick<SessionResult, 'costUsd' | 'estimatedUsd' | 'costKind' | 'usage'> => {
-    const records = [...usageByKey.values()];
-    if (cli === 'claude' && costUsd > 0) {
-      const model = lastModel || 'claude';
-      records.push({
-        key: `claude:${sessionId}:session`,
-        sessionId,
-        scope: 'session',
-        at: Date.now(),
-        provider: 'claude',
-        model: modelKey(model),
-        modelRaw: model,
-        cli: 'claude',
-        usage: { uncachedInput: null, cachedInput: null, cacheWriteInput: null, output: null, reasoning: null, reasoningIncludedInOutput: true },
-        reportedUsd: costUsd,
-        source: 'claude-statusline',
-      });
-    }
-    const summary = summariseSession(records);
-    const reported = summary.reportedUsd > 0 ? summary.reportedUsd : cli === 'claude' ? costUsd : 0;
-    const estimated = summary.reportedUsd > 0 ? 0 : summary.estimatedUsd;
-    const kind = reported > 0 ? 'reported' : estimated > 0 ? 'estimated' : summary.records.length ? summary.kind : 'unavailable';
-    return { costUsd: reported, estimatedUsd: estimated, costKind: kind, usage: summary.records };
-  };
+  const costSummary = (): Pick<SessionResult, 'costUsd' | 'estimatedUsd' | 'costKind' | 'usage'> =>
+    cliCostSummary({ cli, sessionId, records: [...usageByKey.values()], reportedUsd: costUsd, lastModel });
 
   /** The session is over. A CLI kept alive (keepAlive) that ended its turn normally stays at its prompt (keep); others close. */
   const finish = (r: Omit<SessionResult, 'costUsd' | 'turns' | 'estimatedUsd' | 'costKind' | 'usage'>, keep = false) => {
