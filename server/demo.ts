@@ -817,9 +817,18 @@ export function createDemoBackend(scale: DemoScale | null = null): Backend {
     terminals: true,
     reconnectClis: async () => [], // fake sessions end with the office
     hooksReady: () => undefined,
+    cliAlive: () => null, // a fake session has no process to check
     releaseClis: async () => undefined,
+    // The models the real office would have asked each CLI for (server/clis.ts), so the demo shows the same choices.
     detectClis: async () =>
-      CLIS.map((c) => ({ id: c.id, label: c.label, installed: true, version: 'demo', integrated: c.integrated })),
+      CLIS.map((c) => ({
+        id: c.id,
+        label: c.label,
+        installed: true,
+        version: 'demo',
+        integrated: c.integrated,
+        models: c.id === 'opencode' ? ['deepseek/deepseek-flash', 'deepseek/deepseek-v4-pro', 'opencode/big-pickle'] : c.id === 'codex' ? ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-5.5'] : ['claude-opus-5-5', 'claude-sonnet-5'],
+      })),
     previews: demoPreviews,
     office: demoOffice,
     voice: demoVoice,

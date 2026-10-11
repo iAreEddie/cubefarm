@@ -26,9 +26,10 @@ const PLURAL: Record<NotifyEvent, string> = {
   hire: 'team changes wait for you',
   agentError: 'agents need help',
   usage: 'usage changes',
+  budget: 'budget changes',
   merge: 'merges',
 };
-const ICON: Record<NotifyEvent | 'test', string> = { needsHuman: '⚠️', ceoMessage: '💬', hire: '📄', agentError: '🛑', usage: '⏸', merge: '🔀', test: '🔔' };
+const ICON: Record<NotifyEvent | 'test', string> = { needsHuman: '⚠️', ceoMessage: '💬', hire: '📄', agentError: '🛑', usage: '⏸', budget: '💵', merge: '🔀', test: '🔔' };
 
 export const clip = (s: string, max = BODY_MAX) => {
   const t = s.replace(/\s+/g, ' ').trim();

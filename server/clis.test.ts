@@ -1,9 +1,12 @@
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import { describe, expect, it } from 'vitest';
-import { CODEX_HOOK_EVENTS, codexHookCommand, CROSS_TURN_TOOLS, hookReviewKey, interruptions, launchArgs, oneAtATime, trustKey, unwrapCmdShim, type LaunchContext } from './clis.ts';
+import { CODEX_HOOK_EVENTS, codexConfigToml, codexHookCommand, CROSS_TURN_TOOLS, hookReviewKey, interruptions, launchArgs, OFFICE_MCP_SOURCE, officeMcpEnv, officeMcpNodePath, officeMcpSource, oneAtATime, opencodeMajor, opencodePermission, opencodeUsesAuto, parseOpencodeModels, trustKey, unwrapCmdShim, type LaunchContext } from './clis.ts';
 import { describeOfficeTool, describeTool, newScreenshots, screenshotFile, summariseResult } from './agentRunner.ts';
+
+const nodeRequire = createRequire(import.meta.url);
 
 const dir = path.join(os.tmpdir(), 'npm-global');
 
@@ -89,6 +92,7 @@ describe('launchArgs', () => {
     codexHook: 'codex-hook.cjs',
     plugin: 'file:///plugin.mjs',
     browser: null,
+    office: null,
     ...patch,
   });
   it('starts Claude Code on a chosen session id, with the prompt after --', () => {
@@ -126,12 +130,46 @@ describe('launchArgs', () => {
     expect(resumed).toContain('--dangerously-bypass-approvals-and-sandbox');
   });
 
+  it('runs Codex without its daemon, which a mismatched install refuses to start without', () => {
+    // An install whose CLI package doesn't match its executable answers every run with "Error: the CLI package does
+    // not match this platform or executable. To work without the background server, rerun the same command with
+    // --no-daemon." and exits, taking the whole prompt with it — the CEO came back saying the message was empty.
+    // The office gives each agent its own pty, so it wants no shared daemon either way.
+    const fresh = launchArgs('codex', ctx()).args;
+    expect(fresh).toContain('--no-daemon');
+    expect(fresh[0]).toBe('--no-alt-screen'); // and it is a top-level flag, before any -c overrides
+    const resumed = launchArgs('codex', ctx({ resumeId: 'thread-1' })).args;
+    expect(resumed[0]).toBe('resume');
+    expect(resumed).toContain('--no-daemon');
+  });
+
   it("gives Codex the office's hooks, with the office's address in its environment", () => {
     const { args, env } = launchArgs('codex', ctx());
     const hooks = args.filter((a) => a.startsWith('hooks.'));
     expect(hooks.map((h) => h.slice(6, h.indexOf('=')))).toEqual(CODEX_HOOK_EVENTS);
     expect(hooks[0]).toContain('type="command"');
     expect(env.CUBEFARM_HOOK_URL).toBe('http://127.0.0.1:1/api/hooks/t');
+  });
+
+  it("gives a Codex CEO the SDK path its office-tools bridge needs", () => {
+    // The bridge is deployed to the office's folder, outside cubefarm, so it cannot find the MCP SDK on its own.
+    // OpenCode is told through its config's `environment`; Codex has no such field, so the office sets NODE_PATH in
+    // the session's environment, which Codex and its MCP subprocesses inherit. Without it the CEO has no office tools
+    // and says so, while still answering — easy to mistake for the CEO being broken.
+    const office = { command: 'node', args: ['office-mcp.cjs', 'http://127.0.0.1:1/api/mcp/t'], nodePath: '/opt/cubefarm/node_modules' };
+    expect(launchArgs('codex', ctx({ role: 'ceo', office })).env.NODE_PATH).toBe('/opt/cubefarm/node_modules');
+    // An agent, or no office server at all: nothing added.
+    expect(launchArgs('codex', ctx({ role: 'agent', office })).env.NODE_PATH).toBeUndefined();
+    expect(launchArgs('codex', ctx({ role: 'ceo' })).env.NODE_PATH).toBeUndefined();
+  });
+
+  it('writes the Codex config that carries the office server, which -c cannot express', () => {
+    const toml = codexConfigToml({ command: 'C:\\Program Files\\nodejs\\node.exe', args: ['C:\\Users\\A B\\.cubefarm\\bin\\office-mcp.cjs', 'http://127.0.0.1:4317/api/mcp/tok'] });
+    expect(toml).toBe(
+      '[mcp_servers.office]\ncommand = "C:\\\\Program Files\\\\nodejs\\\\node.exe"\nargs = ["C:\\\\Users\\\\A B\\\\.cubefarm\\\\bin\\\\office-mcp.cjs", "http://127.0.0.1:4317/api/mcp/tok"]\n',
+    );
+    // Doubled backslashes are what a TOML basic string needs for a Windows path, so a round trip must give it back.
+    expect(toml).toContain('"C:\\\\Program Files\\\\nodejs\\\\node.exe"');
   });
 
   it('runs the hook program with a command that never starts with a quote on Windows', () => {
@@ -143,6 +181,166 @@ describe('launchArgs', () => {
     const config = (patch: Partial<LaunchContext>) => JSON.parse(launchArgs('opencode', ctx(patch)).env.OPENCODE_CONFIG_CONTENT);
     for (const role of ['agent'] as const) expect(config({ role }).permission).toEqual({ edit: 'allow', bash: 'allow', webfetch: 'allow' });
     expect(config({}).autoupdate).toBe(false);
+  });
+
+  it("gives the office's tools to the CLIs that start their own MCP servers", () => {
+    const office = { command: 'C:\\Program Files\\nodejs\\node.exe', args: ['C:\\Users\\A B\\.cubefarm\\bin\\office-mcp.cjs', 'http://127.0.0.1:4317/api/mcp/tok'], nodePath: 'C:\\cubefarm\\node_modules' };
+    const { args, env } = launchArgs('codex', ctx({ role: 'ceo', office, codexHome: 'C:\\swarm\\sessions\\t\\codex' }));
+    // Codex cannot be given an MCP server on the command line at all: every table-shaped -c value arrives as a string
+    // and fails the bootstrap config. It reads the session's CODEX_HOME instead (codexConfigToml), which the runner
+    // writes and passes; NODE_PATH is what lets the bridge find the SDK from outside cubefarm.
+    expect(args.some((a) => a.startsWith('mcp_servers.office'))).toBe(false);
+    expect(env.CODEX_HOME).toBe('C:\\swarm\\sessions\\t\\codex');
+    expect(env.NODE_PATH).toBe('C:\\cubefarm\\node_modules');
+    const opencode = JSON.parse(launchArgs('opencode', ctx({ role: 'ceo', office })).env.OPENCODE_CONFIG_CONTENT);
+    // environment: the bridge is deployed outside cubefarm, so it must be told where the SDK it needs lives.
+    expect(opencode.mcp.office).toEqual({ type: 'local', command: [office.command, ...office.args], enabled: true, environment: { NODE_PATH: office.nodePath } });
+    // Claude Code reads the office's own server from the MCP config file the office writes, so it gets nothing extra.
+    const claude = launchArgs('claude', ctx({ role: 'ceo', office, files: { settings: 's', mcp: 'mcp.json', system: 'i' } })).args;
+    expect(claude.some((a) => a.includes('office-mcp'))).toBe(false);
+  });
+
+  it("leaves the office's tools out for an agent, and when there is no office server", () => {
+    const office = { command: 'node', args: ['office-mcp.cjs', 'http://127.0.0.1:1/api/mcp/t'], nodePath: '/cubefarm/node_modules' };
+    expect(launchArgs('codex', ctx({ role: 'agent', office })).args.some((a) => a.startsWith('mcp_servers.office='))).toBe(false);
+    expect(launchArgs('opencode', ctx({ role: 'agent', office })).env.OPENCODE_CONFIG_CONTENT).not.toContain('office-mcp');
+    expect(launchArgs('codex', ctx({ role: 'ceo' })).args.some((a) => a.startsWith('mcp_servers.office='))).toBe(false);
+  });
+
+  it("keeps the CEO's hands off the shell in OpenCode too", () => {
+    // Whatever auto-approves permissions still leaves an explicit deny standing, so the CEO keeps no shell there.
+    const ceo = opencodePermission('ceo');
+    expect(ceo).toMatchObject({ bash: 'deny', edit: 'deny', webfetch: 'deny' });
+    expect(opencodePermission('agent')).toEqual({ edit: 'allow', bash: 'allow', webfetch: 'allow' });
+    const config = JSON.parse(launchArgs('opencode', ctx({ role: 'ceo' })).env.OPENCODE_CONFIG_CONTENT);
+    expect(config.permission).toEqual(ceo);
+  });
+
+  it('starts OpenCode with `run`, the subcommand that takes a message', () => {
+    // The bare command is OpenCode's interactive TUI: it takes neither --model nor a message, so the office got its
+    // help text back and exit 1 instead of an agent working. `run` takes the message and exits at the end of the turn.
+    const { args } = launchArgs('opencode', ctx({ model: 'deepseek/deepseek-flash' }));
+    expect(args[0]).toBe('run');
+    expect(args).toContain('--model');
+    expect(args[args.indexOf('--model') + 1]).toBe('deepseek/deepseek-flash');
+    expect(args).not.toContain('--prompt');
+    // The message ends the command line as a plain argument, after every flag.
+    expect(args[args.length - 1]).toBe('--looks like a flag');
+    expect(args.filter((a) => a === '--looks like a flag')).toHaveLength(1);
+  });
+
+  it('auto-approves permissions with a flag the OpenCode being run actually has', () => {
+    // 1.x spells it --dangerously-skip-permissions; 2.x renamed it --auto. Sending the wrong one costs the whole
+    // session: OpenCode answers an unknown flag with its help text and exit 1.
+    const legacy = launchArgs('opencode', ctx()).args;
+    expect(legacy).toContain('--dangerously-skip-permissions');
+    expect(legacy).not.toContain('--auto');
+    const modern = launchArgs('opencode', ctx({ opencodeAuto: true })).args;
+    expect(modern).toContain('--auto');
+    expect(modern).not.toContain('--dangerously-skip-permissions');
+    for (const args of [legacy, modern]) expect(args[0]).toBe('run');
+  });
+
+  it('resumes an OpenCode session with the same subcommand', () => {
+    const { args } = launchArgs('opencode', ctx({ resumeId: 'ses_abc123' }));
+    expect(args[0]).toBe('run');
+    expect(args.slice(args.indexOf('--session'), args.indexOf('--session') + 2)).toEqual(['--session', 'ses_abc123']);
+    expect(args[args.length - 1]).toBe('--looks like a flag');
+  });
+});
+
+describe('which OpenCode line the office is running', () => {
+  it('reads the major version the CLI prints', () => {
+    // The office asks the OpenCode it found to print its version, and two lines disagree on the flag that
+    // auto-approves permissions. Sending the wrong one costs the whole session: it answers with its help and exit 1.
+    expect(opencodeMajor('opencode v2.0.26')).toBe(2);
+    expect(opencodeMajor('1.4.10')).toBe(1);
+    expect(opencodeMajor('opencode v2.0.26 (something)')).toBe(2);
+    expect(opencodeMajor('')).toBeNull();
+    expect(opencodeMajor('command not found')).toBeNull();
+  });
+
+  it('answers 1.x when the CLI cannot be asked, whose flag exists in both lines', () => {
+    expect(opencodeUsesAuto(path.join(os.tmpdir(), 'definitely-not-here', 'opencode.exe'))).toBe(false);
+  });
+});
+
+describe("the models a CLI says it can run", () => {
+  it('reads the model names out of what OpenCode prints, ignoring anything else', () => {
+    // `opencode models` lists the providers it is signed in to, a model a line, so a DeepSeek-only machine offers
+    // DeepSeek's models in the office's model fields instead of the office's guess at Anthropic's.
+    const printed = ['deepseek/deepseek-flash', 'deepseek/deepseek-v4-pro', 'ollama/gemma4:e4b', '', 'warning: something', '  opencode/big-pickle  '].join('\n');
+    expect(parseOpencodeModels(printed)).toEqual(['deepseek/deepseek-flash', 'deepseek/deepseek-v4-pro', 'ollama/gemma4:e4b', 'opencode/big-pickle']);
+  });
+
+  it('drops duplicates and caps a very long list, and is empty for nothing', () => {
+    expect(parseOpencodeModels('a/b\na/b\nc/d')).toEqual(['a/b', 'c/d']);
+    expect(parseOpencodeModels(Array.from({ length: 200 }, (_, i) => `p/m${i}`).join('\n'))).toHaveLength(60);
+    expect(parseOpencodeModels('')).toEqual([]);
+    expect(parseOpencodeModels('no models here')).toEqual([]);
+  });
+});
+
+describe('where the MCP bridge looks for its SDK', () => {
+  it('is the node_modules cubefarm itself is installed in', () => {
+    // The bridge is deployed to the office's own folder (SWARM_HOME/bin), outside cubefarm, so `require` from there
+    // finds nothing: the CEO silently lost every office tool, and told the manager it had none rather than inventing
+    // schemas. The office passes this to the CLI as the MCP server's NODE_PATH.
+    const win = officeMcpNodePath(() => 'C:\\cubefarm\\node_modules\\@modelcontextprotocol\\sdk\\package.json');
+    expect(win).toBe('C:\\cubefarm\\node_modules');
+    const unix = officeMcpNodePath(() => '/opt/cubefarm/node_modules/@modelcontextprotocol/sdk/package.json');
+    expect(unix).toBe('/opt/cubefarm/node_modules');
+    // Nested (a package manager's store, or npm's own tree): the deepest node_modules is the one that has it.
+    const nested = officeMcpNodePath(() => '/home/x/app/node_modules/.pnpm/@modelcontextprotocol+sdk@1/node_modules/@modelcontextprotocol/sdk/package.json');
+    expect(nested).toBe('/home/x/app/node_modules/.pnpm/@modelcontextprotocol+sdk@1/node_modules');
+  });
+
+  it('is empty, not wrong, when the SDK cannot be found', () => {
+    expect(officeMcpNodePath(() => {
+      throw new Error('MODULE_NOT_FOUND');
+    })).toBe('');
+    // Nothing to pass on: the server then inherits the CLI's own environment instead of a path that does not exist.
+    expect(officeMcpEnv('')).toEqual({});
+    expect(officeMcpEnv('C:\\cubefarm\\node_modules')).toEqual({ NODE_PATH: 'C:\\cubefarm\\node_modules' });
+  });
+
+  it('resolves the SDK from this checkout, so the bridge starts where the office runs', () => {
+    expect(officeMcpNodePath()).toContain('node_modules');
+    expect(fs.existsSync(path.join(officeMcpNodePath(), '@modelcontextprotocol', 'sdk', 'package.json'))).toBe(true);
+  });
+});
+
+describe('the office MCP bridge', () => {
+  it('is a stdio MCP server that forwards the office tools to the office over HTTP', () => {
+    // Deployed as a file the CLIs spawn, so it must be plain CommonJS with the office URL in its arguments.
+    expect(OFFICE_MCP_SOURCE).toContain('require(');
+    expect(OFFICE_MCP_SOURCE).not.toMatch(/^\s*(import|export)\s/m);
+    expect(OFFICE_MCP_SOURCE).toContain('process.argv[2]');
+    expect(OFFICE_MCP_SOURCE).toContain('StreamableHTTPClientTransport');
+    expect(OFFICE_MCP_SOURCE).toContain('StdioServerTransport');
+    expect(OFFICE_MCP_SOURCE).toContain('ListToolsRequestSchema');
+    expect(OFFICE_MCP_SOURCE).toContain('CallToolRequestSchema');
+  });
+
+  it('carries the SDK folder in its own source, since the environment cannot be relied on', () => {
+    // The bridge is deployed outside cubefarm, so it cannot resolve the SDK by walking up from itself. NODE_PATH looks
+    // like the answer, but Codex spawns its MCP servers with an environment of its own: measured with a logging stand-in
+    // at the deployed path, the bridge was launched with NODE_PATH unset and died before serving anything.
+    const deployed = officeMcpSource('C:\\cubefarm\\node_modules');
+    expect(deployed).toContain(`const SDK_DIR = ${JSON.stringify('C:\\cubefarm\\node_modules')};`);
+    expect(deployed).toContain('module.paths.unshift(SDK_DIR)');
+    expect(deployed).not.toContain('__SDK_DIR__');
+    // It is still the same bridge, and still plain CommonJS a CLI can spawn.
+    expect(deployed).toContain('StreamableHTTPTransport'.replace('Transport', 'ClientTransport'));
+    expect(deployed).not.toMatch(/^\s*(import|export)\s/m);
+    // The URL still comes from the argument, so one deployed file serves every session.
+    expect(deployed).toContain('process.argv[2]');
+  });
+
+  it('resolves the SDK parts it requires, so the bridge starts where the office runs', () => {
+    for (const mod of ['@modelcontextprotocol/sdk/client/index.js', '@modelcontextprotocol/sdk/client/streamableHttp.js', '@modelcontextprotocol/sdk/server/index.js', '@modelcontextprotocol/sdk/server/stdio.js', '@modelcontextprotocol/sdk/types.js']) {
+      expect(nodeRequire.resolve(mod), mod).toBeTruthy();
+    }
   });
 });
 

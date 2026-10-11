@@ -22,7 +22,7 @@ import { conflictFixInstructions, MAX_QA_ROUNDS, qaGate, qaOutcome, type PreQa, 
 import { qaInstructions } from './qaPrompt.ts';
 import { followKeptCli, resumeNote, resumesAfterRestart } from './restartRecovery.ts';
 import { reconcileStep, restartMessage, sessionStart, workState, type ReconcileStep, type RestartCounts, type WorkState } from './reconcile.ts';
-import { diagnose, finding, forget, NUDGE_WAIT_MS, nudgeText, QUIET_MS, triage, unclosedIssues, type Problem, type Remedy, type WatchAgent, type WatchMemory } from './watchdog.ts';
+import { diagnose, finding, forget, NUDGE_WAIT_MS, nudgeText, QUIET_MS, reportable, REPORT_QUIET_MS, triage, unclosedIssues, type Problem, type Remedy, type WatchAgent, type WatchMemory } from './watchdog.ts';
 import { sendBackPatch } from './sendBack.ts';
 import { checkTriageTarget, triageStep, type TriagePr } from './triage.ts';
 import { DEFAULT_PREVIEW, Previews, parsePreviewPatch } from './previews.ts';
@@ -33,6 +33,7 @@ import { agentPromptPreview, ceoPromptPreview, devBranch, devSystemPrompt, faile
 import { QA_RESUME_PROMPT, qaRetry } from './qaRetry.ts';
 import { drainDecision, lastUpdateMessage, POSTPONE_MS, type DrainInput, type LastUpdate } from './officeUpdate.ts';
 import { clampPacingSessions, DEFAULT_PACING_SESSIONS, mayStart, PACING_MS, pacingMessage, resumeRefusal, usageLabel, usageView, waived, warningView, type UsageWarning, type Waiver, type WorkKind } from './pacing.ts';
+import { budgetAlert, budgetBlocksNewWork, budgetStatus, clampBudgetUsd } from '../shared/budget.ts';
 import { emptyHistory, loadHistory, opsView, recordChecks, recordCost, recordMerges, recordQa, type OpsFloorState, type OpsHistory } from './metrics.ts';
 import { clampTrimIdleMin, DEFAULT_TRIM_IDLE_MIN, desksToTrim, formatBytes, freedMessage, idleSince, TRIM_SWEEP_MS } from './deskTrim.ts';
 import { cliLabel, isCli } from './clis.ts';
@@ -56,6 +57,7 @@ import { cleanStyle, HAIR_COLORS, SKIN_TONES, type AgentStyle } from '../shared/
 import { achievementDef, type ProgressView } from '../shared/progress.ts';
 import { parsePongResult, PONG_PLAYER, recordGame } from '../shared/pong.ts';
 import { effectiveModel } from '../shared/models.ts';
+import { LEGACY_CEO_CLI, resolveCli } from '../shared/cli.ts';
 import { DEFAULT_WEATHER, DEFAULT_WORLD_EVENTS, weatherSettings, worldEventSettings } from '../shared/outside.ts';
 import { DEFAULT_THEME_SETTINGS, dueGreeting, themeSettings } from '../shared/themes.ts';
 import { CEO_ID, DEFAULT_DOG_NAME, DEFAULT_MAX_AGENTS, FLOOR_SEATS, INSTALL_STEP } from '../shared/types.ts';
@@ -68,6 +70,7 @@ import type {
   AgentStatus,
   AgentTask,
   AgentView,
+  BudgetView,
   CeoInfo,
   CliView,
   ClientEvent,
@@ -116,6 +119,11 @@ interface PersistedRepo {
   qaBrief: string;
   preview: PreviewConfig; // how the floor's app runs for the preview monitor
   addedAt: number;
+  budgetUsd: number; // the manager's cap on the floor's reported spend (#7); 0 = no budget
+  spentUsd: number; // reported spend accumulated over the floor's life (only sessions that report a cost add to it)
+  costSessions: number; // sessions that reported a cost: 0 means spend is "not reported", never a zero
+  budgetWarned: boolean; // the 80% alert has been posted for the current crossing
+  budgetStopped: boolean; // the 100% alert has been posted for the current crossing
 }
 
 interface PersistedAgent {
@@ -297,7 +305,8 @@ const LOOKS: AgentLook[] = ['feminine', 'masculine'];
 // Every agent runs Claude Opus 5.5 at medium effort unless the manager overrides it.
 const DEFAULT_MODEL = 'claude-opus-5-5';
 const EFFORTS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
-// The CEO thinks harder than the staff: Opus 5.5 at xhigh effort unless the manager changes it.
+// The CEO thinks harder than the staff: Claude Code's Opus 5.5 at xhigh effort. The effort holds whichever coding
+// agent it runs; the model is only its own while it runs Claude Code (see modelFor).
 const CEO_MODEL = 'claude-opus-5-5';
 const CEO_EFFORT: EffortLevel = 'xhigh';
 const CEO_NAME = 'Morgan';
@@ -627,6 +636,11 @@ export class Swarm {
           qaBrief: r.qaBrief ?? '',
           localPath: r.localPath ?? null,
           preview: { command: r.preview?.command ?? null, env: { ...r.preview?.env } },
+          budgetUsd: clampBudgetUsd(r.budgetUsd),
+          spentUsd: Number.isFinite(r.spentUsd) && r.spentUsd > 0 ? r.spentUsd : 0,
+          costSessions: Number.isFinite(r.costSessions) && r.costSessions > 0 ? r.costSessions : 0,
+          budgetWarned: !!r.budgetWarned,
+          budgetStopped: !!r.budgetStopped,
         })),
         // Developers and QA testers became agents (docs/agents.md): testers keep their seats, now the east-wall desks.
         agents: (loaded.agents ?? []).map((raw) => legacyAgent<PersistedAgent>(raw)).map((a) => ({
@@ -926,6 +940,13 @@ export class Swarm {
 
   // ---------- views ----------
 
+  /** A floor's budget as the console shows it: reported spend (null: nothing reported yet), the cap and the level. */
+  private budgetView(r: PersistedRepo): BudgetView {
+    const spent = r.costSessions > 0 ? Math.round(r.spentUsd * 1e4) / 1e4 : null;
+    const s = budgetStatus(r.budgetUsd, spent);
+    return { budgetUsd: r.budgetUsd, spentUsd: spent, pct: s.pct, level: s.level, sessions: r.costSessions };
+  }
+
   private repoView(r: PersistedRepo): RepoView {
     const rt = this.repoRt.get(r.id)!;
     return {
@@ -944,6 +965,7 @@ export class Swarm {
       mission: r.mission,
       summary: r.summary,
       qaBrief: r.qaBrief,
+      budget: this.budgetView(r),
       localPath: r.localPath,
       checkoutPath: this.backend.mainDir(r.fullName),
       cloneStatus: rt.cloneStatus,
@@ -1317,6 +1339,11 @@ export class Swarm {
       qaBrief: '',
       preview: { ...DEFAULT_PREVIEW, env: {} },
       addedAt: Date.now(),
+      budgetUsd: 0,
+      spentUsd: 0,
+      costSessions: 0,
+      budgetWarned: false,
+      budgetStopped: false,
     };
     this.backend.setLocalPath(repo.fullName, folder);
     this.state.repos.push(repo);
@@ -1416,7 +1443,7 @@ export class Swarm {
 
   updateRepo(
     id: string,
-    patch: Partial<Pick<PersistedRepo, 'autoAssign' | 'autoMerge' | 'browserTesting' | 'color' | 'links' | 'mission' | 'summary' | 'qaBrief'>> & { previewCommand?: unknown; previewEnv?: unknown },
+    patch: Partial<Pick<PersistedRepo, 'autoAssign' | 'autoMerge' | 'browserTesting' | 'color' | 'links' | 'mission' | 'summary' | 'qaBrief' | 'budgetUsd'>> & { previewCommand?: unknown; previewEnv?: unknown },
   ) {
     const repo = this.repo(id);
     const preview = parsePreviewPatch(patch.previewCommand, patch.previewEnv);
@@ -1433,6 +1460,11 @@ export class Swarm {
     if (typeof patch.mission === 'string') repo.mission = patch.mission.trim().slice(0, 4000);
     if (typeof patch.summary === 'string') repo.summary = patch.summary.trim().slice(0, 140);
     if (typeof patch.qaBrief === 'string') repo.qaBrief = patch.qaBrief.trim().slice(0, 2500);
+    if (patch.budgetUsd !== undefined) {
+      repo.budgetUsd = clampBudgetUsd(patch.budgetUsd);
+      // A new cap re-reads the crossings: setting it below what's been spent alerts at once; raising it re-arms.
+      this.tickBudgets();
+    }
     this.save();
     this.emitRepo(repo);
     setTimeout(() => this.schedule(), 200);
@@ -2115,7 +2147,7 @@ export class Swarm {
 
   updateAgent(id: string, patch: { name?: string; model?: string; effort?: string; cli?: string; look?: string; color?: string; hair?: string; style?: unknown }) {
     const a = this.agent(id);
-    if (patch.cli !== undefined && a.role !== 'ceo') {
+    if (patch.cli !== undefined) {
       const cli = isCli(patch.cli) ? patch.cli : '';
       if (cli && !this.cliReady(cli)) throw new HttpError(400, `${cliLabel(cli)} isn't installed on this computer.`);
       a.cli = cli;
@@ -2272,21 +2304,28 @@ export class Swarm {
 
   /**
    * How an agent's next session runs: the CLI in their terminal (the terminal runtime), or Claude Code through the
-   * SDK. A session can only be resumed by the CLI that made it, so a follow-up stays with that CLI.
+   * SDK. A session can only be resumed by the CLI that made it, so a follow-up stays with that CLI — except when their
+   * coding agent has been changed since: then the new one starts a session of its own, and the old CLI must not be
+   * dragged back to life for it (a CEO moved off Claude Code would otherwise keep hitting Claude's usage limit).
    */
   private sessionRuntime(a: PersistedAgent, resume?: string): { terminal?: AgentTerminal; cli?: AgentCli; label?: string; resumeSessionId?: string } {
     const inTerminal = this.state.settings.runtime === 'terminal' && this.backend.terminals;
-    let cli: AgentCli = this.runtimeCli(a);
+    let cli: AgentCli = resolveCli(a, this.state.settings);
+    // A session from before the last coding-agent change belongs to the old CLI: start fresh instead of resuming it.
     if (resume && a.sessionCli && a.sessionCli !== cli) {
-      if (inTerminal) cli = a.sessionCli;
-      else if (a.sessionCli !== 'claude') resume = undefined;
+      resume = undefined;
+      a.sessionId = null;
+      a.sessionCli = null;
     }
     if (!inTerminal) return { resumeSessionId: resume };
     const what = a.role === 'ceo' ? a.issueTitle : a.task === 'qa' ? `QA · PR #${a.prNumber}` : a.task === 'fix' ? `fixing PR #${a.prNumber}` : a.issueNumber ? `#${a.issueNumber} ${a.issueTitle ?? ''}` : null;
     return { terminal: this.terminalFor(a), cli, label: `${a.name}${what ? ` · ${what}` : ''}`.slice(0, 80).trim(), resumeSessionId: resume };
   }
 
-  /** The model to ask for (the Agent SDK runs Claude Code). '' lets another coding agent use its own default. */
+  /**
+   * The model to ask for. Everyone's, the CEO included: their own when it suits the coding agent they run, else the
+   * office default, else Claude Code's own default. '' lets any other coding agent use its own default.
+   */
   private modelFor(a: PersistedAgent, cli: AgentCli | undefined) {
     return effectiveModel(a.model, cli ?? 'claude', this.state.settings, DEFAULT_MODEL);
   }
@@ -2602,6 +2641,12 @@ export class Swarm {
     a.costUsd += result.costUsd;
     a.turns += result.turns;
     recordCost(this.state.ops, repo.id, result.costUsd, a.endedAt);
+    // The floor's budget counts only what a session reported: CLIs that report nothing add no spend and never block it (#7).
+    if (result.costUsd > 0) {
+      repo.spentUsd = Math.round((repo.spentUsd + result.costUsd) * 1e4) / 1e4;
+      repo.costSessions += 1;
+      this.emitRepo(repo);
+    }
     this.ledger({ kind: 'session', agentId: a.id, key: `${a.id}:${a.startedAt}:${a.endedAt}`, costUsd: result.costUsd, turns: result.turns }, false); // emitted below
     // Dev servers the agent forgot to stop would otherwise keep its port and lock its desk folder.
     void this.releaseDesk(a, repo).catch(() => undefined);
@@ -3385,7 +3430,7 @@ export class Swarm {
    * "Depends on #N" wait until #N is closed; the rest go in readyIssues() order.
    */
   private startIssueWork(repo: PersistedRepo): boolean {
-    if (!repo.autoAssign || !this.mayStart('issue')) return false;
+    if (!repo.autoAssign || !this.mayStart('issue') || this.budgetBlocks(repo)) return false;
     const agent = this.available(repo)[0];
     const next = agent ? this.readyIssues(repo)[0] : undefined;
     if (!agent || !next) return false;
@@ -3481,6 +3526,76 @@ export class Swarm {
     this.emitUsage();
   }
 
+  // ---------- floor budgets (#7) ----------
+
+  /** True when the floor is at 100% of its budget: its new issues wait until the manager raises the cap. */
+  private budgetBlocks(repo: PersistedRepo): boolean {
+    return budgetBlocksNewWork(budgetStatus(repo.budgetUsd, repo.costSessions > 0 ? repo.spentUsd : null));
+  }
+
+  /**
+   * Read every floor's budget: post the 80% and 100% alerts once each, and re-arm them when spend falls back below a
+   * line (a raised cap). Called from the scheduler's beat and when the manager changes a cap.
+   */
+  private tickBudgets() {
+    for (const repo of this.state.repos) {
+      const spent = repo.costSessions > 0 ? repo.spentUsd : null;
+      const s = budgetStatus(repo.budgetUsd, spent);
+      const wantWarned = s.level === 'warning' || s.level === 'over';
+      const wantStopped = s.level === 'over';
+      let changed = false;
+      if (wantWarned && !repo.budgetWarned) {
+        repo.budgetWarned = true;
+        changed = true;
+        if (spent !== null) {
+          this.postMessage('office', budgetAlert('warning', repo.floor, repo.fullName, spent, repo.budgetUsd));
+          this.notifier.notify('budget', `Floor ${repo.floor} is at ${s.pct}% of its budget`, `${repo.fullName} has reported spend of ${s.pct}% of its budget. At 100% it stops starting new issues until you raise it.`);
+        }
+      }
+      if (wantStopped && !repo.budgetStopped) {
+        repo.budgetStopped = true;
+        changed = true;
+        if (spent !== null) {
+          this.postMessage('office', budgetAlert('over', repo.floor, repo.fullName, spent, repo.budgetUsd));
+          this.notifier.notify('budget', `Floor ${repo.floor} reached its budget`, `${repo.fullName} has reported spend up to its budget, so no new issues start on it until you raise it. Work in flight carries on.`);
+        }
+      }
+      if (!wantWarned && repo.budgetWarned) {
+        repo.budgetWarned = false;
+        changed = true;
+      }
+      if (!wantStopped && repo.budgetStopped) {
+        repo.budgetStopped = false;
+        changed = true;
+      }
+      if (changed) {
+        this.save();
+        this.emitRepo(repo);
+      }
+    }
+  }
+
+  /** The demo's way to put a floor's spend at a budget line on demand (POST /api/repos/:repo/budget/simulate). */
+  simulateBudget(repoId: string, kind: unknown): RepoView {
+    if (!this.backend.demo) throw new HttpError(404, 'Budgets can only be simulated in the demo office.');
+    if (kind !== 'warning' && kind !== 'over' && kind !== 'reset') throw new HttpError(400, 'kind must be "warning", "over" or "reset"');
+    const repo = this.repo(repoId);
+    if (kind === 'reset') {
+      repo.spentUsd = 0;
+      repo.costSessions = 0;
+    } else {
+      if (!(repo.budgetUsd > 0)) throw new HttpError(409, `Set a budget for ${repo.fullName} first, then simulate its spend.`);
+      const pct = kind === 'over' ? 105 : 85;
+      repo.spentUsd = Math.round(repo.budgetUsd * pct) / 100;
+      repo.costSessions = Math.max(1, repo.costSessions);
+    }
+    this.tickBudgets();
+    this.save();
+    this.emitRepo(repo);
+    this.opsSoon();
+    return this.repoView(repo);
+  }
+
   // ---------- mission control ----------
 
   private opsTimer: NodeJS.Timeout | null = null;
@@ -3547,6 +3662,7 @@ export class Swarm {
    */
   private schedule() {
     this.tickUsage();
+    this.tickBudgets();
     this.progressTick();
     if (this.officeUpdateTick()) return; // draining for the office's own update
     this.applyTeamChanges(); // before handing out work, so agents on their way out get none
@@ -3726,9 +3842,11 @@ export class Swarm {
         hair: '#2b2118',
         skin: pick(SKIN),
         style: null,
-        model: CEO_MODEL,
+        model: '',
         effort: CEO_EFFORT,
-        cli: 'claude',
+        // '' = the office's default coding agent, as for every agent. The office used to pin the CEO to Claude Code
+        // and ignore this; the correction below clears what that left behind, so the CEO follows the default.
+        cli: '',
         machine: null,
         status: 'idle',
         issueNumber: null,
@@ -3755,6 +3873,25 @@ export class Swarm {
       a.status = 'idle';
       a.lastError = null;
       this.appendLog(a, [{ kind: 'system', text: '↺ The office server restarted. Picking the job back up.' }]);
+    }
+    const cli = resolveCli(a, this.state.settings);
+    // An office that pinned the CEO to Claude Code stored that as its coding agent and never read it back: clear it once
+    // so the CEO follows the office default like everyone else (a pick in the corner office's Setup still wins). Its
+    // stored chat came from that Claude Code; the next job starts a session of its own under the new coding agent.
+    if (a.role === 'ceo' && a.cli === LEGACY_CEO_CLI) {
+      a.cli = '';
+      if (a.model === CEO_MODEL) a.model = '';
+      a.sessionId = null;
+      a.sessionCli = null;
+      this.emitAgent(a);
+      this.save();
+    }
+    // A session made by a coding agent they no longer run can't be resumed (a chat included): start fresh instead, and
+    // forget the old one, so the next job doesn't hand it back to the CLI that can no longer run it.
+    if (a.sessionCli && a.sessionCli !== cli) {
+      a.sessionId = null;
+      a.sessionCli = null;
+      this.save();
     }
     if (this.state.ceo.job) {
       this.state.ceo.queue.unshift(this.state.ceo.job);
@@ -3870,7 +4007,7 @@ export class Swarm {
         cwd: CEO_DIR,
         prompt: ceoJobPrompt(job, floor, triage),
         systemAppend: ceoSystemPrompt(this.ceoPromptInput(a)),
-        model: a.model || CEO_MODEL,
+        model: this.modelFor(a, how.cli),
         effort: a.effort || CEO_EFFORT,
         browserTesting: false,
         additionalDirectories: this.state.repos.filter((r) => this.repoRt.get(r.id)?.cloneStatus === 'ready').map((r) => this.backend.mainDir(r.fullName)),
@@ -3887,7 +4024,7 @@ export class Swarm {
         },
         sessionId: (id) => {
           a.sessionId = id;
-          a.sessionCli = id ? 'claude' : null;
+          a.sessionCli = id ? (how.cli ?? 'claude') : null; // a follow-up stays with the CLI that made the session
         },
         browserUrl: () => undefined,
         screenshot: () => undefined,
@@ -4210,7 +4347,7 @@ export class Swarm {
   // ---------- the watchdog and the office doctor (#262) ----------
 
   private activity = new Map<string, number>(); // agent id -> their session's latest output or tool activity
-  private watch: WatchMemory = { remedied: new Map(), nudged: new Map() };
+  private watch: WatchMemory = { remedied: new Map(), nudged: new Map(), reported: new Map() };
   private doctor: DoctorFinding[] = [];
   private ignored = new Set<string>(); // findings the manager ignored, until they go away
   private lastDoctor = '';
@@ -4249,23 +4386,50 @@ export class Swarm {
   private watchdogTick(heal = true) {
     const now = Date.now();
     forget(this.watch, now);
-    const agents: WatchAgent[] = this.state.agents.map((a) => ({
-      id: a.id,
-      name: a.name,
-      repoId: a.repoId,
-      role: a.role,
-      status: a.status,
-      task: a.task,
-      issueNumber: a.issueNumber,
-      prNumber: a.prNumber,
-      startedAt: a.startedAt,
-      activeAt: this.activeAt(a),
-      work: this.workOf(a),
-    }));
+    const agents: WatchAgent[] = this.state.agents.map((a) => {
+      const rt = this.agentRt.get(a.id);
+      const term = rt?.terminal;
+      // Only ask when the office believes a CLI is driving this agent: a terminal it never started one in is not a
+      // dead session, and cliAlive answers null for it.
+      const cliDead = rt?.session && term ? this.backend.cliAlive(term) === false : false;
+      return {
+        id: a.id,
+        name: a.name,
+        repoId: a.repoId,
+        role: a.role,
+        status: a.status,
+        task: a.task,
+        issueNumber: a.issueNumber,
+        prNumber: a.prNumber,
+        startedAt: a.startedAt,
+        activeAt: this.activeAt(a),
+        work: this.workOf(a),
+        cliDead: !!cliDead,
+      };
+    });
     const unclosed = this.state.repos.flatMap((r) => {
       const rt = this.repoRt.get(r.id);
       return rt?.lastSync ? unclosedIssues(r.id, rt.issues.map((i) => i.number), rt.pulls) : [];
     });
+    // Tell the CEO about anything that has gone quiet or lost its process, on this minute's tick rather than after the
+    // healing window. The office does this itself: no agent is woken to watch other agents, and the CEO is the one who
+    // can act on it (the manager reads the same line in the office chat).
+    for (const a of reportable(agents, now)) {
+      const key = `report:${a.id}`;
+      const mins = Math.round((now - a.activeAt) / 60_000);
+      if (this.watch.reported.get(key) !== undefined) continue;
+      this.watch.reported.set(key, now);
+      const what = a.prNumber != null ? `PR #${a.prNumber}` : `#${a.issueNumber}`;
+      const why = a.cliDead ? 'its CLI process is gone' : `nothing for ${mins} minutes`;
+      this.postMessage('office', `🩺 ${a.name} has gone quiet on ${what} (${why}). The CEO has been told.`);
+      this.toast('info', `${a.name} is quiet on ${what}`);
+      this.enqueueCeo({ kind: 'review', at: now });
+    }
+    // An agent that has spoken since its report starts a fresh one: the next silence on it is news again.
+    for (const a of agents) {
+      const key = `report:${a.id}`;
+      if (this.watch.reported.has(key) && !a.cliDead && now - a.activeAt < REPORT_QUIET_MS) this.watch.reported.delete(key);
+    }
     const { auto, doctor } = triage(diagnose(agents, this.state.qa, unclosed, now), this.watch, now);
     if (heal) {
       const done = auto.map(({ problem, remedy }) => this.remedy(problem, remedy, now)).filter((t): t is string => !!t);
@@ -4286,6 +4450,16 @@ export class Swarm {
     const rec = p.prNumber != null ? this.state.qa.find((q) => q.repoId === p.repoId && q.prNumber === p.prNumber) : undefined;
     const what = p.prNumber != null ? `PR #${p.prNumber}` : `#${p.issueNumber}`;
     const mins = Math.round((now - p.since) / 60_000);
+    // A CLI that is gone needs no nudge and no waiting: the keeper stops the terminals it holds once it has had no
+    // office for ORPHAN_MS (10 min), so an agent can be left "working" with its process already dead and nothing
+    // reporting an exit. Nudging that session writes into nothing, and the old path only requeued it after another ten
+    // minutes of waiting. Checked here, before the nudge, because for a dead CLI the silence is not a slowdown.
+    if (a && this.agentRt.get(a.id)?.session && this.backend.cliAlive(this.terminalFor(a)) === false) {
+      this.watch.remedied.set(p.key, now);
+      this.requeue(a, `the office found ${a.name}'s ${what} had no CLI process left (it ended without reporting an exit)`);
+      this.toast('error', `${a.name}'s session had already ended: ${what} is back in line.`);
+      return `put ${a.name}'s ${what} back in line (its CLI was already gone)`;
+    }
     if (remedy === 'nudge') {
       const session = a && this.agentRt.get(a.id)?.session;
       if (!a || !session) return null;
@@ -4861,12 +5035,11 @@ export class Swarm {
 
   /** What an agent runs, defaults resolved, for the CEO. */
   private agentSetup(a: PersistedAgent) {
-    const ceo = a.role === 'ceo';
-    const cli = ceo ? 'claude' : a.cli || this.state.settings.defaultCli;
+    const cli = resolveCli(a, this.state.settings);
     return {
       codingAgent: cli,
-      model: ceo ? a.model || CEO_MODEL : this.modelFor(a, cli) || 'the coding agent default',
-      effort: a.effort || (ceo ? CEO_EFFORT : this.state.settings.defaultEffort),
+      model: this.modelFor(a, cli) || 'the coding agent default',
+      effort: a.effort || (a.role === 'ceo' ? CEO_EFFORT : this.state.settings.defaultEffort),
     };
   }
 

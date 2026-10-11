@@ -9,6 +9,7 @@ export const NOTIFY_EVENTS: { id: NotifyEvent; label: string }[] = [
   { id: 'hire', label: 'A team change waits for my decision' },
   { id: 'agentError', label: 'Someone is stuck in an error for over 10 minutes' },
   { id: 'usage', label: "Claude's usage limit pauses or paces the office" },
+  { id: 'budget', label: 'A floor reaches 80% or 100% of its budget' },
   { id: 'merge', label: 'Every merge' },
 ];
 
@@ -17,7 +18,7 @@ export const NOTIFY_CHANNELS: NotifyChannel[] = ['desktop', 'push', ...NOTIFY_WE
 
 /** Merges are optional: on a busy office they're the noisiest event. */
 export const DEFAULT_NOTIFY: NotifySettings = {
-  events: { needsHuman: true, ceoMessage: true, hire: true, agentError: true, usage: true, merge: false },
+  events: { needsHuman: true, ceoMessage: true, hire: true, agentError: true, usage: true, budget: true, merge: false },
   channels: { desktop: true, push: true, ntfy: true },
   officeUrl: '',
 };
