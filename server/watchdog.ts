@@ -34,6 +34,13 @@ export interface WatchAgent {
   activeAt: number;
   /** Their task's state as the office knows it. */
   work: WorkState;
+  /**
+   * Their CLI process is gone while the task is still theirs. A session that ends without reporting an exit (the keeper
+   * stops the terminals it holds after ORPHAN_MS with no office) leaves an agent "working" on work that can never
+   * finish, and no amount of waiting or nudging brings it back: it is stuck from the moment the process died, not from
+   * the moment output stopped. Optional so existing callers and tests need no change; undefined counts as alive.
+   */
+  cliDead?: boolean;
 }
 
 export interface WatchQa {
@@ -64,6 +71,8 @@ export interface Problem {
   prNumber: number | null;
   issueNumber: number | null;
   since: number;
+  /** The agent's CLI process is gone: a nudge cannot bring this one back, only a requeue can. */
+  cliDead?: boolean;
 }
 
 const BUSY = ['preparing', 'working'];
@@ -83,7 +92,10 @@ export function diagnose(agents: readonly WatchAgent[], qa: readonly WatchQa[], 
   });
   for (const a of agents) {
     if (a.role === 'ceo' || !a.task) continue;
-    if (a.status === 'working' && now - a.activeAt >= QUIET_MS) out.push(of(a, 'quiet', a.activeAt));
+    // A dead CLI first: it is stuck whatever its activity time says, and the remedy must be a requeue rather than a
+    // nudge (see remedy() in swarm.ts). `since` is now, so the finding is not dressed up as a long silence.
+    if (a.cliDead) out.push({ ...of(a, 'quiet', now), cliDead: true });
+    else if (a.status === 'working' && now - a.activeAt >= QUIET_MS) out.push(of(a, 'quiet', a.activeAt));
     else if (a.status === 'preparing' && a.startedAt != null && now - a.startedAt >= PREPARING_MS) out.push(of(a, 'preparing', a.startedAt));
     else if ((a.status === 'error' || a.status === 'stopped') && (a.work === 'closed' || a.work === 'merged')) out.push(of(a, 'stale', a.startedAt ?? now));
   }
@@ -154,6 +166,11 @@ export function triage(problems: readonly Problem[], memory: WatchMemory, now: n
       continue;
     }
     if (p.kind === 'quiet') {
+      // A dead CLI has no session to wake, so it skips the nudge and goes straight to the requeue.
+      if (p.cliDead) {
+        auto.push({ problem: p, remedy });
+        continue;
+      }
       const nudgedAt = memory.nudged.get(p.key);
       if (nudgedAt === undefined) auto.push({ problem: p, remedy: 'nudge' });
       else if (now - nudgedAt >= NUDGE_WAIT_MS) auto.push({ problem: p, remedy });

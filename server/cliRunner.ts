@@ -211,6 +211,19 @@ function endLive(live: LiveCli): Promise<void> {
   return gone;
 }
 
+/**
+ * Whether an agent's CLI is really still running. A terminal with no live process is a session that ended without the
+ * office being told: the keeper stops every CLI it holds after it has had no office for ORPHAN_MS (10 min), so an office
+ * that comes back after that is looking at terminals whose processes are already gone, and nothing reports it. Without
+ * this, such an agent stays "working" on its task forever and the work is stranded until the watchdog's far slower
+ * silence check. A terminal the office never started a CLI in (null) is not a dead session.
+ */
+export function cliAlive(term: AgentTerminal): boolean | null {
+  const live = lives.get(term);
+  if (!live) return null;
+  return live.proc !== null;
+}
+
 /** What the keeper holds with a CLI's terminal, so the office can pick it up again after a restart. */
 interface CliMeta {
   agentId: string;

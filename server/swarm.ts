@@ -4228,19 +4228,27 @@ export class Swarm {
   private watchdogTick(heal = true) {
     const now = Date.now();
     forget(this.watch, now);
-    const agents: WatchAgent[] = this.state.agents.map((a) => ({
-      id: a.id,
-      name: a.name,
-      repoId: a.repoId,
-      role: a.role,
-      status: a.status,
-      task: a.task,
-      issueNumber: a.issueNumber,
-      prNumber: a.prNumber,
-      startedAt: a.startedAt,
-      activeAt: this.activeAt(a),
-      work: this.workOf(a),
-    }));
+    const agents: WatchAgent[] = this.state.agents.map((a) => {
+      const rt = this.agentRt.get(a.id);
+      const term = rt?.terminal;
+      // Only ask when the office believes a CLI is driving this agent: a terminal it never started one in is not a
+      // dead session, and cliAlive answers null for it.
+      const cliDead = rt?.session && term ? this.backend.cliAlive(term) === false : false;
+      return {
+        id: a.id,
+        name: a.name,
+        repoId: a.repoId,
+        role: a.role,
+        status: a.status,
+        task: a.task,
+        issueNumber: a.issueNumber,
+        prNumber: a.prNumber,
+        startedAt: a.startedAt,
+        activeAt: this.activeAt(a),
+        work: this.workOf(a),
+        cliDead: !!cliDead,
+      };
+    });
     const unclosed = this.state.repos.flatMap((r) => {
       const rt = this.repoRt.get(r.id);
       return rt?.lastSync ? unclosedIssues(r.id, rt.issues.map((i) => i.number), rt.pulls) : [];
@@ -4265,6 +4273,16 @@ export class Swarm {
     const rec = p.prNumber != null ? this.state.qa.find((q) => q.repoId === p.repoId && q.prNumber === p.prNumber) : undefined;
     const what = p.prNumber != null ? `PR #${p.prNumber}` : `#${p.issueNumber}`;
     const mins = Math.round((now - p.since) / 60_000);
+    // A CLI that is gone needs no nudge and no waiting: the keeper stops the terminals it holds once it has had no
+    // office for ORPHAN_MS (10 min), so an agent can be left "working" with its process already dead and nothing
+    // reporting an exit. Nudging that session writes into nothing, and the old path only requeued it after another ten
+    // minutes of waiting. Checked here, before the nudge, because for a dead CLI the silence is not a slowdown.
+    if (a && this.agentRt.get(a.id)?.session && this.backend.cliAlive(this.terminalFor(a)) === false) {
+      this.watch.remedied.set(p.key, now);
+      this.requeue(a, `the office found ${a.name}'s ${what} had no CLI process left (it ended without reporting an exit)`);
+      this.toast('error', `${a.name}'s session had already ended: ${what} is back in line.`);
+      return `put ${a.name}'s ${what} back in line (its CLI was already gone)`;
+    }
     if (remedy === 'nudge') {
       const session = a && this.agentRt.get(a.id)?.session;
       if (!a || !session) return null;

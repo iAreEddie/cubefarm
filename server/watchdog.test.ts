@@ -43,6 +43,18 @@ describe('diagnose', () => {
     expect(diagnose([agent({ activeAt: NOW - QUIET_MS })], [], [], NOW)).toMatchObject([{ kind: 'quiet', agentId: 'a1', issueNumber: 207 }]);
   });
 
+  it('finds an agent whose CLI process is already gone, however recent its output was', () => {
+    // The keeper stops the terminals it holds after ORPHAN_MS with no office, so an agent can be left "working" with
+    // its process dead and no exit ever reported. That is stuck from the moment it died, not from the last output: an
+    // activeAt one minute old must still be found, and marked so the remedy is a requeue rather than a nudge.
+    const fresh = diagnose([agent({ cliDead: true, activeAt: NOW - MIN })], [], [], NOW);
+    expect(fresh).toMatchObject([{ kind: 'quiet', agentId: 'a1', cliDead: true }]);
+    // Its twin without the flag is not found yet, which is the bug this guards.
+    expect(diagnose([agent({ activeAt: NOW - MIN })], [], [], NOW)).toEqual([]);
+    // An agent that is not busy, or has no task, is never flagged this way.
+    expect(diagnose([agent({ cliDead: true, task: null })], [], [], NOW)).toEqual([]);
+  });
+
   it('finds a desk being set up for more than 10 minutes', () => {
     expect(diagnose([agent({ status: 'preparing', startedAt: NOW - PREPARING_MS + MIN })], [], [], NOW)).toEqual([]);
     expect(diagnose([agent({ status: 'preparing', startedAt: NOW - PREPARING_MS })], [], [], NOW)).toMatchObject([{ kind: 'preparing' }]);
@@ -90,6 +102,16 @@ describe('unclosedIssues', () => {
 });
 
 describe('triage', () => {
+  it('requeues a dead CLI straight away instead of nudging a session that is not there', () => {
+    // Nudging writes into a session whose process has already exited, and waiting NUDGE_WAIT_MS after that is another
+    // ten minutes of a floor stuck on work nobody is doing. A dead CLI goes to the requeue on the first pass.
+    const m = memory();
+    const [p] = diagnose([agent({ cliDead: true })], [], [], NOW);
+    expect(p.cliDead).toBe(true);
+    expect(triage([p], m, NOW).auto).toEqual([{ problem: p, remedy: 'requeue' }]);
+    expect(m.nudged.size).toBe(0);
+  });
+
   it('nudges a quiet session once, then requeues its work if it stays (or goes) quiet again', () => {
     const m = memory();
     const [p] = diagnose([agent({ activeAt: NOW - QUIET_MS })], [], [], NOW);
