@@ -3924,6 +3924,10 @@ export class Swarm {
   /** Queue a job for the CEO: one onboarding and one plan per floor, one review, and chat messages merge into one reply. */
   private enqueueCeo(job: CeoJob) {
     const q = this.state.ceo.queue;
+    // A review already running is not a reason to queue another: the dedupe below only looks at the queue, so a caller
+    // that fires while one is in flight (the heartbeat, or a burst of reports) would otherwise stack up reviews of the
+    // same unchanged company. One running or queued review is enough.
+    if (job.kind === 'review' && (this.state.ceo.job?.kind === 'review' || q.some((j) => j.kind === 'review'))) return;
     const same = q.findIndex((j) => j.kind === job.kind && (job.kind === 'review' || job.kind === 'chat' || (j.repoId === job.repoId && j.prNumber === job.prNumber)));
     if (same >= 0) q[same] = job.kind === 'chat' ? { ...q[same], text: `${q[same].text}\n${job.text}` } : job;
     else q.push(job);
@@ -4420,9 +4424,13 @@ export class Swarm {
       this.watch.reported.set(key, now);
       const what = a.prNumber != null ? `PR #${a.prNumber}` : `#${a.issueNumber}`;
       const why = a.cliDead ? 'its CLI process is gone' : `nothing for ${mins} minutes`;
-      this.postMessage('office', `🩺 ${a.name} has gone quiet on ${what} (${why}). The CEO has been told.`);
+      this.postMessage('office', `🩺 ${a.name} has gone quiet on ${what} (${why}). ${a.cliDead ? 'Its work is back in line.' : 'The watchdog is watching it.'}`);
       this.toast('info', `${a.name} is quiet on ${what}`);
-      this.enqueueCeo({ kind: 'review', at: now });
+      // Deliberately NOT enqueueCeo({kind:'review'}) here. A review is a staffing check-up that costs a full CEO job, and
+      // one quiet session is not a reason to re-examine the team: queueing one per report had the CEO answering "keep
+      // six agents, the profile and QA brief are complete" back to back while the manager's messages waited behind it.
+      // The office line above is the report; the CEO reads it at its next job, and anything needing action is requeued
+      // by the watchdog on its own.
     }
     // An agent that has spoken since its report starts a fresh one: the next silence on it is news again.
     for (const a of agents) {

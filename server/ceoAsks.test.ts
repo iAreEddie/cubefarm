@@ -59,3 +59,40 @@ describe("the CEO's file_issue", () => {
     expect((await office()).internals.state.ceo.queue.map((j) => j.kind)).toEqual(['onboard']);
   });
 });
+
+describe('the CEO job queue', () => {
+  type QueueInternals = {
+    state: { ceo: { queue: { kind: string; repoId?: string; text?: string }[]; job: { kind: string } | null } };
+    enqueueCeo(job: { kind: string; at: number; repoId?: string; text?: string }): void;
+  };
+  const fresh = () => new Swarm(createDemoBackend()) as unknown as QueueInternals;
+
+  it('keeps only one review, so a burst of callers cannot stack up reviews of an unchanged company', () => {
+    // The heartbeat and the quiet-session reports both reach for a review, and the dedupe only looked at the queue, so a
+    // caller firing while one was in flight queued another: the CEO then answered "keep six agents, no changes needed"
+    // back to back while the manager's messages waited behind it.
+    const s = fresh();
+    s.enqueueCeo({ kind: 'review', at: 1 });
+    s.enqueueCeo({ kind: 'review', at: 2 });
+    expect(s.state.ceo.queue.map((j) => j.kind)).toEqual(['review']);
+
+    // A second report while one is already running adds nothing, however many are lined up behind it.
+    s.state.ceo.job = { kind: 'review' };
+    s.enqueueCeo({ kind: 'review', at: 3 });
+    expect(s.state.ceo.queue.filter((j) => j.kind === 'review')).toHaveLength(1);
+
+    // With nothing running and nothing queued, one still gets through.
+    const t = fresh();
+    t.enqueueCeo({ kind: 'review', at: 1 });
+    expect(t.state.ceo.queue.map((j) => j.kind)).toEqual(['review']);
+  });
+
+  it('still queues the work the manager asked for, and merges consecutive chats into one job', () => {
+    const s = fresh();
+    s.enqueueCeo({ kind: 'plan', repoId: 'r1', at: 1 });
+    s.enqueueCeo({ kind: 'chat', text: 'first', at: 2 });
+    s.enqueueCeo({ kind: 'chat', text: 'second', at: 3 });
+    expect(s.state.ceo.queue.map((j) => j.kind)).toEqual(['plan', 'chat']);
+    expect(s.state.ceo.queue[1].text).toBe('first\nsecond');
+  });
+});
