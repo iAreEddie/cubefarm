@@ -40,7 +40,7 @@ import { emptyHistory, loadHistory, opsView, recordChecks, recordCost, recordMer
 import { clampTrimIdleMin, DEFAULT_TRIM_IDLE_MIN, desksToTrim, formatBytes, freedMessage, idleSince, TRIM_SWEEP_MS } from './deskTrim.ts';
 import { cliLabel, isCli } from './clis.ts';
 import { machineName } from './machines.ts';
-import { MACHINES_DIR, type DeskTrim } from './workspace.ts';
+import { MACHINES_DIR, type DeskTrim, listenersOn } from './workspace.ts';
 import { envSecrets, Journal } from './journal.ts';
 import { sampleDay, seeded } from './journalSample.ts';
 import { addTenure, apply as applyLedger, buy as buyDecor, emptyLedger, grant as grantCoins, loadLedger, place as placeDecor, progressView, type CommandResult, type Effects, type LedgerEvent, type LedgerState } from './ledger.ts';
@@ -457,6 +457,9 @@ function isResync(raw: unknown): boolean {
 }
 
 const ICON = { pass: '✅', fail: '❌', skip: '⏭️' } as const;
+
+/** How often to ask the reserved ports what is listening: each look spawns a process per port. */
+const DISCOVERY_EVERY_MS = 3 * 60_000;
 
 const clampMaxAgents = (n: unknown) => Math.max(1, Math.min(FLOOR_SEATS, Math.round(Number(n)) || DEFAULT_MAX_AGENTS));
 
@@ -4380,6 +4383,10 @@ export class Swarm {
   private watch: WatchMemory = { remedied: new Map(), nudged: new Map(), reported: new Map() };
   /** Processes cubefarm is responsible for (ownedProcesses.ts): what it spawned, and what an agent started. */
   private owned: OwnedProcess[] = [];
+  /** What each port a sweep looked at was listening with, refreshed on its own pass (attributeListeners). */
+  private discovered = new Map<number, { pid: number; cmdline: string }[]>();
+  private discoveredAt = 0;
+  private discovering = false;
   private doctor: DoctorFinding[] = [];
   private ignored = new Set<string>(); // findings the manager ignored, until they go away
   private lastDoctor = '';
@@ -4431,6 +4438,32 @@ export class Swarm {
    * demo server started from the agent's shell is nobody's child), which is how forty of them piled up on one machine
    * with dead parents and no way to attribute them; finding those by listening port is the follow-up.
    */
+  /**
+   * Ask each agent's reserved port what is listening on it, and remember the answer for the synchronous sweep.
+   * This is the only way to see a server an agent started: it is not the office's child and its command line need not
+   * name the agent. Runs on its own pass and is never awaited, so a slow or missing port lookup cannot stall the tick.
+   */
+  private async attributeListeners(): Promise<void> {
+    if (this.discovering) return;
+    // Each look spawns a process per port, so this is minutes apart, not every tick: nothing listening changes fast.
+    if (Date.now() - this.discoveredAt < DISCOVERY_EVERY_MS) return;
+    this.discoveredAt = Date.now();
+    this.discovering = true;
+    try {
+      const next = new Map<number, { pid: number; cmdline: string }[]>();
+      for (const a of this.state.agents) {
+        if (a.role === 'ceo') continue;
+        const port = this.port(a);
+        next.set(port, await listenersOn(port));
+      }
+      this.discovered = next;
+    } catch {
+      // best effort: no attribution is better than a broken sweep
+    } finally {
+      this.discovering = false;
+    }
+  }
+
   private sweepOwnedProcesses(now: number): void {
     const found: OwnedProcess[] = [];
     for (const a of this.state.agents) {
@@ -4453,6 +4486,24 @@ export class Swarm {
 
     let next = this.owned;
     for (const p of found) next = owned.track(next, p);
+
+    // What an agent started itself: anything listening on its reserved port, which the prompt reserves for it.
+    for (const a of this.state.agents) {
+      if (a.role === 'ceo') continue;
+      for (const l of this.discovered.get(this.port(a)) ?? []) {
+        found.push({
+          pid: l.pid,
+          kind: 'demo',
+          agentId: a.id,
+          agentName: a.name,
+          task: a.task ?? null,
+          prNumber: a.prNumber ?? null,
+          issueNumber: a.issueNumber ?? null,
+          firstSeen: now,
+          cmdline: l.cmdline,
+        });
+      }
+    }
     // A pid that is no longer running must not stay in the register, or it would be reported as an orphan forever.
     next = owned.forget(next, new Set(found.map((p) => p.pid)));
     this.owned = next;
@@ -4485,6 +4536,7 @@ export class Swarm {
     const now = Date.now();
     forget(this.watch, now);
     this.sweepOwnedProcesses(now);
+    void this.attributeListeners();
     const agents: WatchAgent[] = this.state.agents.map((a) => {
       const rt = this.agentRt.get(a.id);
       const term = rt?.terminal;

@@ -755,6 +755,54 @@ export function leftoversInDesk(listing: string, desk: string, keep: OfficeProce
 }
 
 /**
+ * What is listening on a port right now: the pid and its command line, or nothing. Read-only, and deliberately apart
+ * from releaseDirs (which kills): the office uses this to attribute a server an agent started to that agent, because a
+ * process an agent spawns inside its own session is nobody's child and cannot be identified any other way.
+ */
+export async function listenersOn(port: number): Promise<{ pid: number; cmdline: string }[]> {
+  if (!port) return [];
+  try {
+    if (process.platform === 'win32') {
+      const script = [
+        "$ErrorActionPreference = 'SilentlyContinue'",
+        `Get-NetTCPConnection -LocalPort ${port} -State Listen | ForEach-Object {`,
+        '  $proc = Get-CimInstance Win32_Process -Filter ("ProcessId=" + $_.OwningProcess)',
+        '  if ($proc) { Write-Output ("{0}|{1}" -f $proc.ProcessId, ($proc.CommandLine -replace "`r?`n", " ")) }',
+        '}',
+      ].join('\n');
+      const out = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script]);
+      return out
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => {
+          const bar = line.indexOf('|');
+          const pid = Number(line.slice(0, bar));
+          return { pid, cmdline: bar >= 0 ? line.slice(bar + 1) : '' };
+        })
+        .filter((l) => Number.isInteger(l.pid) && l.pid > 0);
+    }
+    // lsof is present on macOS by default and on most Linux images; a miss just means no attribution.
+    const out = await run('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-Fpc']);
+    const found: { pid: number; cmdline: string }[] = [];
+    let pid = 0;
+    let cmd = '';
+    for (const line of out.split('\n')) {
+      if (line.startsWith('p')) pid = Number(line.slice(1));
+      else if (line.startsWith('c')) cmd = line.slice(1);
+      if (pid && cmd) {
+        found.push({ pid, cmdline: cmd });
+        pid = 0;
+        cmd = '';
+      }
+    }
+    return found;
+  } catch {
+    return []; // no tool, or nothing listening: attribution is best-effort and must never break a sweep
+  }
+}
+
+/**
  * Stop what an agent left running: anything listening on its reserved port or whose command line points into its
  * desk, plus the shell/node chain that launched it. Never the office's own processes (the keeper, the CLIs in agents'
  * terminals): the walk up from a leftover stops at them.
