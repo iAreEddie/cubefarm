@@ -28,8 +28,9 @@ const PLURAL: Record<NotifyEvent, string> = {
   usage: 'usage changes',
   budget: 'budget changes',
   merge: 'merges',
+  upstream: 'upstream updates',
 };
-const ICON: Record<NotifyEvent | 'test', string> = { needsHuman: '⚠️', ceoMessage: '💬', hire: '📄', agentError: '🛑', usage: '⏸', budget: '💵', merge: '🔀', test: '🔔' };
+const ICON: Record<NotifyEvent | 'test', string> = { needsHuman: '⚠️', ceoMessage: '💬', hire: '📄', agentError: '🛑', usage: '⏸', budget: '💵', merge: '🔀', upstream: '⬆️', test: '🔔' };
 
 export const clip = (s: string, max = BODY_MAX) => {
   const t = s.replace(/\s+/g, ' ').trim();

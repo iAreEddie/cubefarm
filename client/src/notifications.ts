@@ -11,12 +11,14 @@ export interface DesktopCheck {
 /** Whether this tab shows a note: only while it's hidden (a visible office chimes and toasts already), and only if allowed. */
 export const wantsDesktop = (c: DesktopCheck) => c.enabled && c.hidden && c.permission === 'granted';
 
-/** The notes this tab showed, for QA: window.__swarmNotify.shown. */
+/** The notes this tab showed, for QA: window.__swarmNotify.shown; and every note the office sent it, `.received`. */
 const shown: NoteView[] = [];
-if (typeof window !== 'undefined') (window as unknown as Record<string, unknown>).__swarmNotify = { shown };
+const received: NoteView[] = [];
+if (typeof window !== 'undefined') (window as unknown as Record<string, unknown>).__swarmNotify = { shown, received };
 
 export function showDesktopNote(note: NoteView, enabled: boolean) {
   if (typeof document === 'undefined') return;
+  received.push(note); // QA can check what arrived, whatever this tab does with it
   const permission = typeof Notification === 'undefined' ? 'unsupported' : Notification.permission;
   if (!wantsDesktop({ enabled, hidden: document.visibilityState !== 'visible', permission })) return;
   show(note);

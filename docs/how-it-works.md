@@ -195,3 +195,15 @@ When the office has finished its work and asks for an update (`{ type: 'office:u
 If a step fails, the launcher goes back with `git reset --keep <from>`, which never touches local changes. It reinstalls the old dependencies if npm install ran, rebuilds if a build ran, starts the old version and writes `ok: false` with the error. A refused update (another branch, local changes) also writes `ok: false`.
 
 Ctrl+C (or SIGTERM) stops the server, then Vite, and leaves no processes behind; press it twice to quit at once. The launcher is only for a checkout: `npx cubefarm` and a bare `node --import tsx server/index.ts` have none, so there the office only reports that an update is ready.
+
+### Upstream drift (forks)
+
+The above follows **origin**: it keeps a checkout current with the repo it is a clone of. A **fork** additionally tracks
+the **upstream** project it was made from (by default `leonvanzyl/cubefarm`). `server/upstream.ts` checks that at most
+once every 24 hours while the office runs (and once at startup if overdue); the cadence and last result live in
+`state.json`, so restarts don't repeat a check. The comparison is by commit ancestry in an isolated bare mirror under
+`<SWARM_HOME>/upstream/`, never touching the running checkout, and it reports one phone notification per newly observed
+upstream head with missing commits (upstream name, count, change summary, comparison link). Failures keep the last good
+result and retry a few times sooner, then daily. It only watches and reports: it never merges upstream, resets the
+fork, opens pull requests or restarts the office, and the origin self-update is unchanged. Configure it in the
+manager's console under **Office → Upstream**; details in [Pocket mode](pocket.md#upstream-drift).

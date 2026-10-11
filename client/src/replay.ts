@@ -71,6 +71,7 @@ function frameSnapshot(f: JournalFrame): WorldSnapshot {
     version: s.version,
     officeCommit: s.officeCommit,
     officeUpdate: s.officeUpdate,
+    upstream: s.upstream,
     usage: f.usage,
     clis: s.clis,
     voiceKeySet: s.voiceKeySet,

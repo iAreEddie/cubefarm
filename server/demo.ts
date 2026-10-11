@@ -11,6 +11,7 @@ import type { LocalFolder } from './workspace.ts';
 import { HOME_DIR, type DemoScale } from './config.ts';
 import { DAY_MS, emptyHistory, HOUR_MS, prune, startOfDay, type OpsHistory } from './metrics.ts';
 import { takeLastUpdate, underLauncher, type OfficeHost } from './officeUpdate.ts';
+import type { UpstreamHost } from './upstream.ts';
 import type { UsageWarning } from './pacing.ts';
 import { VoiceApiError, type VoiceApi } from './voice.ts';
 import type { WeatherApi } from './weather.ts';
@@ -831,6 +832,7 @@ export function createDemoBackend(scale: DemoScale | null = null): Backend {
       })),
     previews: demoPreviews,
     office: demoOffice,
+    upstream: demoUpstream,
     voice: demoVoice,
     weather: demoWeather,
     notify: demoNotify,
@@ -839,6 +841,7 @@ export function createDemoBackend(scale: DemoScale | null = null): Backend {
     seedOps: (ids, at) => demoPastWeek(ids, at),
     demoTeam: (floor) => demoTeam(scale, floor),
     simulateUsage: demoUsage,
+    demoUpstream: (scenario) => setDemoUpstream(scenario),
     demoDoctor: {
       dropDesk: (dir) => {
         deskRepo.delete(dir);
@@ -913,6 +916,48 @@ const demoOffice: OfficeHost = {
     mergedSinceSync.set(OFFICE_REPO, 0);
     lastFakeUpdate.to = fakeSha();
     return { from, to: lastFakeUpdate.to, ok: true, installed: true, built: true, at: Date.now() };
+  },
+};
+
+// ---------- the daily upstream check (#14) ----------
+
+/** The demo's upstream scenarios: what the daily check finds, chosen with POST /api/upstream/demo. */
+export type DemoUpstream = 'current' | 'ahead' | 'updates' | 'diverged' | 'failed';
+let demoUpstreamMode: DemoUpstream = 'updates'; // opens on something to report, so the notification can be seen
+
+/** Sets the demo's upstream scenario; false when it isn't one. */
+export function setDemoUpstream(mode: unknown): boolean {
+  if (mode === 'current' || mode === 'ahead' || mode === 'updates' || mode === 'diverged' || mode === 'failed') {
+    demoUpstreamMode = mode;
+    return true;
+  }
+  return false;
+}
+
+/** Upstream is a real project; this fork owner makes the comparison link genuinely open on GitHub. */
+const DEMO_FORK_OWNER = 'iAreEddie';
+const DEMO_UPSTREAM_SUBJECTS = ['Add upstream drift check', 'Tidy the preview monitor', 'Fix a Windows path bug', 'Speed up the journal', 'Improve the phone layout'];
+/** A stable 40-hex head per scenario, so switching scenarios looks like the upstream moving and alerts once per head. */
+const demoUpstreamHead = (label: string) => `${[...label].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7).toString(16).padStart(7, '0')}${'0'.repeat(33)}`;
+
+/** No network: the configured scenario is returned, or a simulated failure. */
+const demoUpstream: UpstreamHost = {
+  async inspect(cfg) {
+    await new Promise((r) => setTimeout(r, 150));
+    if (demoUpstreamMode === 'failed') throw new Error('demo: could not reach GitHub (simulated network error)');
+    const shape: Record<Exclude<DemoUpstream, 'failed'>, [number, number]> = { current: [0, 0], ahead: [0, 5], updates: [3, 0], diverged: [2, 4] };
+    const [missing, ahead] = shape[demoUpstreamMode as Exclude<DemoUpstream, 'failed'>];
+    const branch = cfg.branch || 'main';
+    return {
+      upstreamBranch: branch,
+      upstreamHead: demoUpstreamHead(demoUpstreamMode),
+      forkBranch: 'main',
+      forkHead: demoUpstreamHead('fork'),
+      missing,
+      ahead,
+      summary: missing ? DEMO_UPSTREAM_SUBJECTS.slice(0, Math.min(3, missing)) : [],
+      compareUrl: `https://github.com/${cfg.repo}/compare/${DEMO_FORK_OWNER}:main...${branch}`,
+    };
   },
 };
 

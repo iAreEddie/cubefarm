@@ -344,10 +344,21 @@ export interface SwarmSettings {
   worldEvents: WorldEventSettings; // Settings → World events: how often something happens outside
   listen: ListenSettings;
   notify: NotifySettings;
+  upstream: UpstreamSettings; // the original project this fork tracks (#14)
+}
+
+/**
+ * The office's upstream project (a fork's original): the daily check watches it for commits our fork's default
+ * branch lacks. `repo` is owner/name; `branch` is '' to resolve the upstream's own default branch.
+ */
+export interface UpstreamSettings {
+  enabled: boolean;
+  repo: string;
+  branch: string;
 }
 
 /** What the office tells the manager about when they're away (docs/pocket.md). */
-export type NotifyEvent = 'needsHuman' | 'ceoMessage' | 'hire' | 'agentError' | 'usage' | 'budget' | 'merge';
+export type NotifyEvent = 'needsHuman' | 'ceoMessage' | 'hire' | 'agentError' | 'usage' | 'budget' | 'merge' | 'upstream';
 
 /** Where it tells them: this browser, Web Push to their devices, or a chat app's webhook. */
 export type NotifyChannel = 'desktop' | 'push' | 'ntfy';
@@ -527,6 +538,31 @@ export interface OfficeUpdateView {
 }
 
 /**
+ * Where the daily upstream check stands (#14). off: the manager turned it off · unknown: not checked yet ·
+ * current: no upstream commits our fork lacks (our fork may still carry its own) · updates: upstream is ahead ·
+ * diverged: both sides have commits the other lacks · failed: the last check couldn't run (the previous result stays).
+ */
+export type UpstreamState = 'off' | 'unknown' | 'current' | 'updates' | 'diverged' | 'failed';
+
+/** What the manager sees of the office's upstream check (the Office settings row and the phone notification). */
+export interface UpstreamView {
+  enabled: boolean;
+  repo: string; // owner/name of the upstream project
+  branch: string; // '' = the upstream's default branch
+  resolvedBranch: string | null; // the branch actually compared (null before the first successful check)
+  state: UpstreamState;
+  missing: number; // commits upstream has that our fork lacks, at the last successful check
+  ahead: number; // commits our fork has that upstream lacks
+  upstreamHead: string | null; // short sha of the observed upstream head
+  forkHead: string | null; // short sha of our fork's default branch
+  compareUrl: string | null; // GitHub's cross-fork comparison link
+  summary: string[]; // subjects of the upstream commits we lack, newest first (up to a few)
+  lastAttemptAt: number | null; // when the check last ran, successful or not
+  lastCheckAt: number | null; // when it last succeeded
+  detail: string | null; // why a failed check failed, or why it hasn't run yet
+}
+
+/**
  * One change to a floor's team: a new agent (they wait in the lobby, where the manager can set them up before they're
  * created) or an agent leaving. The CEO's scale_team makes them; with scaling on auto they're decided at once.
  */
@@ -599,6 +635,7 @@ export interface WorldSnapshot {
   version?: string; // the cubefarm version the server runs (package.json)
   officeCommit?: string | null; // short sha the server started on (absent on servers without self-update)
   officeUpdate?: OfficeUpdateView;
+  upstream: UpstreamView; // the daily check of the original project this fork tracks (#14)
   usage: UsageView;
   ops: OpsView;
   doctor?: DoctorFinding[]; // the office doctor's findings the manager hasn't ignored
@@ -643,6 +680,7 @@ export type ServerEvent =
   | { type: 'message'; message: PhoneMessage }
   | { type: 'phoneRead'; at: number }
   | { type: 'officeUpdate'; officeUpdate: OfficeUpdateView }
+  | { type: 'upstream'; upstream: UpstreamView }
   | { type: 'usage'; usage: UsageView }
   | { type: 'ops'; ops: OpsView }
   | { type: 'doctor'; doctor: DoctorFinding[] }

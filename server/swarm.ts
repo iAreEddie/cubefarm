@@ -32,6 +32,8 @@ import { allowedPath, TEXT_MAX_BYTES, textFileProblem } from './reveal.ts';
 import { agentPromptPreview, ceoPromptPreview, devBranch, devSystemPrompt, failedLogLines, noPushNudge, ownPrLine, qaBranch, qaSystemPrompt } from './prompts.ts';
 import { QA_RESUME_PROMPT, qaRetry } from './qaRetry.ts';
 import { drainDecision, lastUpdateMessage, POSTPONE_MS, type DrainInput, type LastUpdate } from './officeUpdate.ts';
+import { DEFAULT_UPSTREAM, DEMO_UPSTREAM_TICK_MS, emptyUpstream, loadUpstream, upstreamMessage, upstreamSettings, UpstreamMonitor, UPSTREAM_TICK_MS } from './upstream.ts';
+import type { UpstreamPersisted } from './upstream.ts';
 import { clampPacingSessions, DEFAULT_PACING_SESSIONS, mayStart, PACING_MS, pacingMessage, resumeRefusal, usageLabel, usageView, waived, warningView, type UsageWarning, type Waiver, type WorkKind } from './pacing.ts';
 import { budgetAlert, budgetBlocksNewWork, budgetStatus, clampBudgetUsd } from '../shared/budget.ts';
 import { emptyHistory, loadHistory, opsView, recordChecks, recordCost, recordMerges, recordQa, type OpsFloorState, type OpsHistory } from './metrics.ts';
@@ -94,6 +96,7 @@ import type {
   RepoView,
   ServerEvent,
   SwarmSettings,
+  UpstreamView,
   UsageView,
   UsageWarningView,
   WorldSnapshot,
@@ -220,6 +223,7 @@ interface Persisted {
   held: HeldIssue[];
   progress: LedgerState; // coins, decorations, achievements and careers (ledger.ts)
   pong: Record<string, PongRow[]>; // each floor's ping-pong leaderboard, by repo id
+  upstream: UpstreamPersisted; // the daily upstream check's cadence and last result (#14)
 }
 
 interface Shot {
@@ -486,6 +490,7 @@ export class Swarm {
       worldEvents: { ...DEFAULT_WORLD_EVENTS },
       listen: { ...DEFAULT_LISTEN },
       notify: notifySettings(DEFAULT_NOTIFY, {}),
+      upstream: { ...DEFAULT_UPSTREAM },
     },
     repos: [],
     agents: [],
@@ -499,6 +504,7 @@ export class Swarm {
     held: [],
     progress: emptyLedger(),
     pong: {},
+    upstream: emptyUpstream(),
   };
   /**
    * The CEO's office tools. Every session gets its own server: one can only be connected to one session at a time, so
@@ -571,6 +577,8 @@ export class Swarm {
   private readonly envSecrets = envSecrets(process.env);
   /** Notifications to the manager's devices and chat apps (docs/pocket.md). The demo's only log what they'd send. */
   readonly notifier: Notifier;
+  /** The daily check of the original project this fork tracks (#14). Never touches the running checkout. */
+  private readonly upstream: UpstreamMonitor;
   private toldStuck = new Set<string>(); // `${agentId}:${endedAt}`: agents in an error the manager was notified about
 
   constructor(private backend: Backend) {
@@ -606,6 +614,18 @@ export class Swarm {
       broadcast: (note) => this.broadcast({ type: 'notify', note }),
       channelsChanged: (notifyChannels) => this.broadcast({ type: 'notifyChannels', notifyChannels }),
       log: (line) => console.warn(line),
+    });
+    this.upstream = new UpstreamMonitor({
+      host: backend.upstream,
+      settings: () => this.state.settings.upstream,
+      notify: (view) => {
+        const { title, body, line } = upstreamMessage(view);
+        this.notifier.notify('upstream', title, body, line);
+      },
+      changed: (view) => this.broadcast({ type: 'upstream', upstream: view }),
+      save: () => this.save(),
+      log: (line) => console.warn(line),
+      tickMs: backend.demo ? DEMO_UPSTREAM_TICK_MS : UPSTREAM_TICK_MS,
     });
     this.previews = new Previews(backend, {
       emit: (id) => {
@@ -682,6 +702,7 @@ export class Swarm {
         held: loaded.held ?? [],
         progress: loadLedger(loaded.progress),
         pong: loaded.pong && typeof loaded.pong === 'object' ? loaded.pong : {},
+        upstream: loadUpstream(loaded.upstream),
       };
       for (const m of this.state.messages) this.messageSeq = Math.max(this.messageSeq, m.id + 1);
       if (!EFFORTS.includes(this.state.settings.defaultEffort)) this.state.settings.defaultEffort = 'medium';
@@ -714,6 +735,12 @@ export class Swarm {
       this.state.settings.worldEvents = worldEventSettings(DEFAULT_WORLD_EVENTS, loaded.settings?.worldEvents);
       this.state.settings.listen = listenSettings(DEFAULT_LISTEN, loaded.settings?.listen);
       this.state.settings.notify = notifySettings(DEFAULT_NOTIFY, loaded.settings?.notify);
+      // A saved upstream source that no longer validates falls back to the default, so startup never breaks on it.
+      try {
+        this.state.settings.upstream = upstreamSettings(DEFAULT_UPSTREAM, loaded.settings?.upstream);
+      } catch {
+        this.state.settings.upstream = { ...DEFAULT_UPSTREAM };
+      }
       // Offices that were set up before the setup wizard existed skip it.
       if (loaded.settings && loaded.settings.setupDone === undefined && this.state.repos.length > 0) {
         Object.assign(this.state.settings, { setupDone: true, tutorialStep: -1 });
@@ -815,6 +842,8 @@ export class Swarm {
     setInterval(() => this.emitOps(), OPS_TICK_MS); // the clock moves the numbers too: the last hour, today, errors turning into alarms
     setInterval(() => this.notifyStuck(), 60_000);
     setInterval(() => this.watchdogTick(), WATCHDOG_MS);
+    this.upstream.restore(this.state.upstream);
+    this.upstream.start(); // an overdue office checks once now, then at most daily
     void this.backend
       .detectClis()
       .then((clis) => {
@@ -1074,6 +1103,7 @@ export class Swarm {
       version: VERSION,
       officeCommit: this.officeHead?.slice(0, 7) ?? null,
       officeUpdate: this.officeHead ? this.officeUpdateView() : undefined,
+      upstream: this.upstream.view(),
       progress: this.progressView(),
       pong: this.state.pong,
     };
@@ -1219,6 +1249,7 @@ export class Swarm {
 
   private async writeStateFile() {
     for (const a of this.state.agents) a.logTail = (this.agentRt.get(a.id)?.log ?? []).slice(-200);
+    this.state.upstream = this.upstream.serialize();
     await fs.mkdir(path.dirname(STATE_FILE), { recursive: true });
     const tmp = `${STATE_FILE}.tmp`;
     await fs.writeFile(tmp, JSON.stringify(this.state, null, 2));
@@ -1751,6 +1782,7 @@ export class Swarm {
    * through a restart (the terminal keeper holds them for the next start) and stop when the office quits.
    */
   async shutdown(restart = false): Promise<void> {
+    this.upstream.stop();
     await this.writeState().catch((err) => console.warn('could not save the state', err));
     await this.journal.close().catch((err) => console.warn('could not write the journal', err));
     await this.backend.releaseClis(restart); // before the terminals are saved: whatever they print next waits in the keeper
@@ -3301,6 +3333,11 @@ export class Swarm {
       if (url !== undefined && officeUrl(url) === null) throw new HttpError(400, 'The office URL must be an http(s) address, e.g. https://office.your-tailnet.ts.net');
       s.notify = notifySettings(s.notify, patch.notify);
     }
+    if (patch.upstream !== undefined) {
+      const before = s.upstream;
+      s.upstream = upstreamSettings(s.upstream, patch.upstream);
+      this.upstream.configChanged(before, s.upstream);
+    }
     this.save();
     this.broadcast({ type: 'settings', settings: s });
     this.emitCeo();
@@ -3799,6 +3836,20 @@ export class Swarm {
     this.officeUpdateTick();
     setTimeout(() => this.schedule(), 200);
     return this.officeUpdateView();
+  }
+
+  // ---------- upstream drift (#14) ----------
+
+  /** POST /api/upstream/check: the manager's Check now. Runs even when the daily check is switched off. */
+  async checkUpstream(): Promise<UpstreamView> {
+    return this.upstream.check('manual');
+  }
+
+  /** POST /api/upstream/demo: the demo office only: pick current / ahead / updates / diverged / failed, then check. */
+  async demoUpstream(action: unknown): Promise<UpstreamView> {
+    if (!this.backend.demo || !this.backend.demoUpstream) throw new HttpError(403, 'Only the demo office switches upstream scenarios');
+    if (!this.backend.demoUpstream(String(action ?? ''))) throw new HttpError(400, 'scenario must be "current", "ahead", "updates", "diverged" or "failed"');
+    return this.upstream.check('manual');
   }
 
   // ---------- the CEO ----------

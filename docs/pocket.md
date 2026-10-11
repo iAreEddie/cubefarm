@@ -48,6 +48,7 @@ about:
 - a team change waits for your decision
 - someone has been stuck in an error for over 10 minutes
 - Claude's usage limit pauses the office, or a usage warning paces it
+- the original project has commits this fork lacks (the daily upstream check)
 - every merge (off unless you turn it on)
 
 You get at most one notification of each kind a minute. Whatever else of that kind happens in the minute arrives
@@ -84,6 +85,31 @@ pick a long random one.
 1. In the ntfy app, subscribe to a topic such as `cubefarm-7f3k9q2m`.
 2. Enter `https://ntfy.sh/cubefarm-7f3k9q2m` (or your own ntfy server's topic URL) under **ntfy**. For a topic with
    access control, add its access token (`tk_…`). **Save** and **Test**.
+
+### Upstream drift
+
+If the office runs from a fork, **⚙️ Settings → Floors → Upstream** watches the original project the fork was made
+from (by default `leonvanzyl/cubefarm`), so you can keep the fork current without following another repo's releases.
+The check runs **at most once every 24 hours while the office is running**, and once at startup if it is overdue. It
+is remembered in `state.json` (last attempt, last success, the upstream head you were told about), so restarts don't
+repeat a check or a notification; **while the office or the computer is stopped, nothing is checked**.
+
+The comparison uses commit ancestry, not version strings, so it tells a fork that is *behind*, *ahead* or *both*
+apart. It is done in an isolated git mirror under `<SWARM_HOME>/upstream/` and **never touches the running checkout's
+branch, files or remotes**; the office's own `origin` self-update (`npm run dev`/`npm start`, `u`) is unchanged.
+
+- **Current** means upstream has no commits our fork's default branch lacks (our fork may still carry its own).
+- **Updates available** means upstream is ahead; **diverged** means both sides have commits the other lacks.
+- You get **one notification per new upstream head** that has missing commits, with the upstream's name, the count,
+  a short change summary and a GitHub comparison link. Repeated daily checks of the same head don't repeat it. The
+  first check after setup reports already-missing updates once; once integrated it shows current.
+- If a check fails (offline, no auth, GitHub rate limit), the **previous successful result is kept** and no
+  notification is sent; the office retries a few times sooner, then goes back to the daily cadence, so an outage
+  can't spam you. The Upstream row shows the failure and when the last good result was from.
+
+**Requesting integration:** the office only watches and reports. It never merges upstream, resets the fork, opens
+pull requests, restarts itself or changes the origin self-update. To bring an update in, ask the CEO (or a coding
+agent) for a **reviewed pull request** that merges the missing upstream commits; the notification says so.
 
 ### Where the secrets live
 
