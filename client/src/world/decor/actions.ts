@@ -6,6 +6,7 @@ import { api } from '../../api';
 import { repoOnFloor, useStore, type Focus } from '../../store';
 import { noise, tone, type Vec3 } from '../../ui/sfx';
 import { placement } from './decor';
+import { useMonitor } from './monitors';
 
 type DecorationAction = Extract<Focus['action'], { kind: 'decoration' } | { kind: 'trophy' }>;
 
@@ -85,6 +86,12 @@ export function decorationAction(a: DecorationAction) {
   if (a.op === 'arcade') return s.openOverlay({ kind: 'phone', tab: 'games' });
   const repo = repoOnFloor(s.repos, s.floor);
   if (!repo) return;
+  if (a.op === 'browser' && a.slot) {
+    // Use, not move: hand the screen the mouse and keyboard; Close or Esc gives them back (moving stays in the decor box).
+    const id = s.progress.floors[repo.id]?.monitorSlots[a.slot];
+    if (id) useMonitor.getState().open({ repoId: repo.id, slot: a.slot, id });
+    return;
+  }
   const held = s.held?.kind === 'decor' ? s.held : null;
   if (a.op === 'box') {
     if (!held) return s.openOverlay({ kind: 'decor-box', repoId: repo.id });

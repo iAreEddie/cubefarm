@@ -20,7 +20,7 @@ function repoOf(floor?: number | string) {
 function floorOf(floor?: number | string) {
   const repo = repoOf(floor);
   if (!repo) throw new Error(`No floor ${String(floor)}`);
-  return { repo, progress: useStore.getState().progress.floors[repo.id] ?? { coins: 0, earned: 0, merges: 0, owned: {}, placed: {}, firstPr: null } };
+  return { repo, progress: useStore.getState().progress.floors[repo.id] ?? { coins: 0, earned: 0, merges: 0, owned: {}, placed: {}, monitors: {}, monitorSlots: {}, firstPr: null } };
 }
 
 function agentOf(ref: string): Agent {
@@ -35,6 +35,11 @@ const progress = {
   coins: (floor?: number | string) => floorOf(floor).progress.coins,
   purchases: (floor?: number | string) => floorOf(floor).progress.owned,
   placements: (floor?: number | string) => floorOf(floor).progress.placed,
+  /** Each placed browser monitor on a floor: its slot, instance id and last address/volume (#24). */
+  monitors: (floor?: number | string) => {
+    const p = floorOf(floor).progress;
+    return Object.entries(p.monitorSlots).map(([slot, id]) => ({ slot, id, ...p.monitors[id] }));
+  },
   achievements: () => useStore.getState().progress.achievements.map((a) => ({ ...a, name: ACHIEVEMENTS.find((d) => d.id === a.id)?.name })),
   slots: () => DECOR_SLOTS.map((d) => ({ ...d, ...DECOR_SLOT_AT[d.id] })),
   colliders: (floor?: number | string) => decorRects(floorOf(floor).progress.placed),

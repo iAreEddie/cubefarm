@@ -24,6 +24,7 @@ import { jukeboxAction } from './Jukebox';
 import { themeAction } from './themes/active';
 import { tuneChannel } from '../ui/theatre';
 import { decorationAction } from './decor/actions';
+import { monitorInUse } from './decor/monitors';
 import { eAction } from './toys/sip';
 import { sipCoffee, sipPose, tickSip } from './toys/sipping';
 import { peelAimed, placeSticky, pressBoard, releaseBoard } from './boardHands';
@@ -287,6 +288,7 @@ export function Player({ colliders, floor }: { colliders: Rect[]; floor: number 
     // Every key goes through the player's bindings (Help → Controls; ui/keymap.ts), the defaults being the office's keys.
     const onKeyDown = (e: KeyboardEvent) => {
       if (isTyping(e)) return;
+      if (monitorInUse()) return; // a browser monitor has the keyboard: typing and scrolling stay in the page
       const s = useStore.getState();
       const b = bindings();
       if (isBound(b, 'mute', e.code) && !e.repeat && !isConfirmOpen()) {
@@ -383,7 +385,7 @@ export function Player({ colliders, floor }: { colliders: Rect[]; floor: number 
   const padButtons = () => {
     if (!pad.pressed && !pad.released) return;
     const s = useStore.getState();
-    if (!s.started) return;
+    if (!s.started || monitorInUse()) return;
     if (isConfirmOpen()) {
       if (wasPressed('A')) pressKey('Enter');
       if (wasPressed('B')) pressKey('Escape');
@@ -421,14 +423,14 @@ export function Player({ colliders, floor }: { colliders: Rect[]; floor: number 
     }
     const dt = Math.min(rawDt, 0.05);
     const s = useStore.getState();
-    if (s.overlay || isConfirmOpen()) keys.current.clear();
+    if (s.overlay || isConfirmOpen() || monitorInUse()) keys.current.clear();
     pollPad(performance.now());
     padButtons();
 
     // movement: the keys, plus the left stick (which walks slower when pushed less far); L3 runs until you stop
     const k = keys.current;
     const b = bindings();
-    const padOn = !s.overlay && !isConfirmOpen() && s.started;
+    const padOn = !s.overlay && !isConfirmOpen() && !monitorInUse() && s.started;
     const px = padOn ? pad.lx : 0;
     const py = padOn ? pad.ly : 0;
     if (!px && !py) padRun.current = false;

@@ -5,7 +5,7 @@
 /** Where a decoration goes: on a wall, a small spot on the floor, a big spot on the floor, or flat under foot. */
 export type DecorKind = 'wall' | 'floor' | 'big' | 'rug';
 
-export type DecorItem = 'plant' | 'beanbag' | 'fig' | 'poster-ship' | 'poster-repo' | 'poster-pr' | 'rug' | 'lights' | 'neon' | 'fishtank' | 'pingpong' | 'arcade';
+export type DecorItem = 'plant' | 'beanbag' | 'fig' | 'poster-ship' | 'poster-repo' | 'poster-pr' | 'rug' | 'lights' | 'neon' | 'fishtank' | 'pingpong' | 'arcade' | 'browser';
 
 export interface CatalogueItem {
   id: DecorItem;
@@ -30,6 +30,7 @@ export const CATALOGUE: readonly CatalogueItem[] = [
   { id: 'fishtank', name: 'Fish tank', icon: '🐠', kind: 'big', price: 120, blurb: 'A few toon fish doing laps.' },
   { id: 'pingpong', name: 'Ping-pong table', icon: '🏓', kind: 'big', price: 150, blurb: "A spare one, just for show: the floor's own table is for playing." },
   { id: 'arcade', name: 'Arcade cabinet', icon: '🕹️', kind: 'big', price: 200, blurb: "Press E on it to play the phone's games." },
+  { id: 'browser', name: 'Browser monitor', icon: '📺', kind: 'wall', price: 200, blurb: 'A TV-sized web browser for a wall: pages and YouTube. Press E to browse.' },
 ];
 
 export const catalogueItem = (id: string): CatalogueItem | undefined => CATALOGUE.find((c) => c.id === id);
@@ -64,6 +65,20 @@ export const DECOR_SLOTS: readonly { id: string; kind: DecorKind }[] = [
 
 export const slotKind = (id: string): DecorKind | undefined => DECOR_SLOTS.find((s) => s.id === id)?.kind;
 export const slotsOfKind = (kind: DecorKind) => DECOR_SLOTS.filter((s) => s.kind === kind).length;
+
+/**
+ * The wall spots a browser monitor can hang in (#24): wide walls with the room to give. The narrower ones (over the
+ * kitchenette, beside the "ship it" sign) and the ones a fixed screen already shadows are left out, so the fit is
+ * checked before the screen goes up.
+ */
+export const MONITOR_SLOTS: readonly string[] = ['w-west', 'w-south-e', 'w-north-e'];
+
+/** The slots `item` may go in: every slot of its kind, except the browser monitor's restricted walls. */
+export function compatibleSlots(item: DecorItem): string[] {
+  if (item === 'browser') return [...MONITOR_SLOTS];
+  const kind = catalogueItem(item)?.kind;
+  return DECOR_SLOTS.filter((d) => d.kind === kind).map((d) => d.id);
+}
 
 // ---------- coins ----------
 
@@ -121,6 +136,17 @@ export const COFFEE_ADDICT = 10;
 
 // ---------- views ----------
 
+/** A placed browser monitor's own settings (#24), kept by stable instance id so moving it carries them along. */
+export interface MonitorState {
+  /** The last address entered ('' shows the monitor's own home surface). */
+  url: string;
+  /** Playback volume, 0–100. */
+  volume: number;
+  muted: boolean;
+}
+
+export const DEFAULT_MONITOR: MonitorState = { url: '', volume: 60, muted: false };
+
 export interface FloorProgressView {
   coins: number;
   /** Coins earned on this floor, ever. */
@@ -130,6 +156,10 @@ export interface FloorProgressView {
   owned: Partial<Record<DecorItem, number>>;
   /** Slot id -> what stands there. */
   placed: Record<string, DecorItem>;
+  /** Browser monitors on this floor, by stable instance id: their last address and volume (#24). */
+  monitors: Record<string, MonitorState>;
+  /** Slot id -> the browser monitor instance standing there (#24). */
+  monitorSlots: Record<string, string>;
   /** The first PR merged on the floor while the ledger watched: the "first PR" poster shows it. */
   firstPr: { n: number; title: string } | null;
 }

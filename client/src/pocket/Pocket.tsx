@@ -5,6 +5,7 @@ import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { agentsOnRepo, kanbanFor, unreadMessages, useStore } from '../store';
 import { CEO_ID } from '../../../shared/types';
 import { officeUpdateChip } from '../officeUpdate';
+import { BrowserSurface } from '../ui/BrowserSurface';
 import { KanbanView } from '../ui/KanbanView';
 import { NotifySettings } from '../ui/NotifySettings';
 import { AccessibilitySettings } from '../ui/AccessibilitySettings';
@@ -61,7 +62,53 @@ function Banners() {
   );
 }
 
-function Company({ go }: { go: (tab: PocketTab, repoId?: string) => void }) {
+/** The placed browser monitors across every floor, as an accessible list: open one to use it in a panel. */
+function Monitors({ open }: { open: (m: MonitorRef) => void }) {
+  const repos = useStore((s) => s.repos);
+  const floors = useStore((s) => s.progress.floors);
+  const present = repos.filter((r) => Object.keys(floors[r.id]?.monitorSlots ?? {}).length > 0);
+  if (!present.length) return null;
+  return (
+    <div className="pk-card pk-monitors">
+      <h3 className="pk-monitors-title">📺 Browser monitors</h3>
+      {present.map((r) => {
+        const f = floors[r.id];
+        return (
+          <div key={r.id} className="pk-monitor-floor">
+            <div className="muted small">
+              Floor {r.floor} · {name(r.fullName)}
+            </div>
+            {Object.entries(f?.monitorSlots ?? {}).map(([slot, id]) => (
+              <div key={slot} className="pk-monitor-row">
+                <span className="grow pk-ellipsis">{f?.monitors[id]?.url || 'Home screen'}</span>
+                <button className="btn btn-small" onClick={() => open({ repoId: r.id, id, slot })}>
+                  Open
+                </button>
+              </div>
+            ))}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+interface MonitorRef {
+  repoId: string;
+  id: string;
+  slot: string;
+}
+
+function MonitorPanel({ monitor, onClose }: { monitor: MonitorRef; onClose: () => void }) {
+  const floor = useStore((s) => s.progress.floors[monitor.repoId]);
+  return (
+    <Panel title="📺 Browser monitor" onClose={onClose} className="pk-monitor-panel">
+      <BrowserSurface repoId={monitor.repoId} id={monitor.id} initial={floor?.monitors[monitor.id]} onClose={onClose} />
+    </Panel>
+  );
+}
+
+function Company({ go, openMonitor }: { go: (tab: PocketTab, repoId?: string) => void; openMonitor: (m: MonitorRef) => void }) {
   const repos = useStore((s) => s.repos);
   const agents = useStore((s) => s.agents);
   const qa = useStore((s) => s.qa);
@@ -141,6 +188,7 @@ function Company({ go }: { go: (tab: PocketTab, repoId?: string) => void }) {
           </div>
         </div>
       ))}
+      <Monitors open={openMonitor} />
       <button className="btn pk-wide" onClick={openOffice}>
         🏢 Open the 3D office
       </button>
@@ -219,6 +267,7 @@ export default function Pocket() {
   const [tab, setTab] = useState<PocketTab>(() => tabFrom(location.href) ?? 'company');
   const [repoId, setRepoId] = useState<string | null>(null);
   const [settings, setSettings] = useState(false);
+  const [monitor, setMonitor] = useState<MonitorRef | null>(null);
   const company = useStore((s) => s.settings.companyName);
   const loaded = useStore((s) => s.loaded);
   const setupDone = useStore((s) => s.settings.setupDone);
@@ -283,7 +332,7 @@ export default function Pocket() {
           </div>
         ) : (
           <>
-            {tab === 'company' && <Company go={go} />}
+            {tab === 'company' && <Company go={go} openMonitor={setMonitor} />}
             {tab === 'chat' && <Chat autoFocus={false} />}
             {tab === 'kanban' && <Board repoId={repoId} pick={setRepoId} />}
             {tab === 'team' && <Team focusRepo={repoId} />}
@@ -307,6 +356,7 @@ export default function Pocket() {
         <PocketOverlay />
       </Suspense>
       {settings && <Settings onClose={() => setSettings(false)} />}
+      {monitor && <MonitorPanel monitor={monitor} onClose={() => setMonitor(null)} />}
     </div>
   );
 }

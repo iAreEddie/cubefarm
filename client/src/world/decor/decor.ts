@@ -1,6 +1,6 @@
 // Decorations on an office floor (#210), the pure side: how big each item is, where it stands in its slot, its
 // collider, and which slots a held item can go in. Decorations.tsx draws them; layout.ts says where the slots are.
-import { catalogueItem, DECOR_SLOTS, type DecorItem, type DecorKind } from '../../../../shared/progress';
+import { compatibleSlots, DECOR_SLOTS, type DecorItem, type DecorKind } from '../../../../shared/progress';
 import { DECOR_SLOT_AT, type DecorSpot, type Rect } from '../layout';
 
 /** An item's size in its own frame: w across its front, d front to back, h tall. */
@@ -23,6 +23,8 @@ const SIZES: Record<DecorItem, DecorSize> = {
   fishtank: { w: 1.4, d: 0.55, h: 1.45 },
   pingpong: { w: 2.2, d: 1.2, h: 0.78 },
   arcade: { w: 0.8, d: 0.75, h: 1.85 },
+  // A thin, TV-sized 16:9 panel (1.9 m across), flat on its wall.
+  browser: { w: 1.9, d: 0.08, h: 1.07 },
 };
 
 /** What a toy or a person bumps into: the pots, not the leaves; everything else, all of it. */
@@ -106,8 +108,7 @@ export function reservedDecorRects(): Rect[] {
   });
 }
 
-/** The slots `item` could go in now: its kind's empty ones, plus the one it came from. */
+/** The slots `item` could go in now: the ones it's compatible with that are empty, plus the one it came from. */
 export function openSlots(item: DecorItem, placed: Record<string, DecorItem>, from: string | null): string[] {
-  const kind = catalogueItem(item)?.kind;
-  return DECOR_SLOTS.filter((d) => d.kind === kind && (!placed[d.id] || d.id === from)).map((d) => d.id);
+  return compatibleSlots(item).filter((slot) => !placed[slot] || slot === from);
 }

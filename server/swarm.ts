@@ -41,7 +41,7 @@ import { machineName } from './machines.ts';
 import { MACHINES_DIR, type DeskTrim } from './workspace.ts';
 import { envSecrets, Journal } from './journal.ts';
 import { sampleDay, seeded } from './journalSample.ts';
-import { addTenure, apply as applyLedger, buy as buyDecor, emptyLedger, grant as grantCoins, loadLedger, place as placeDecor, progressView, type CommandResult, type Effects, type LedgerEvent, type LedgerState } from './ledger.ts';
+import { addTenure, apply as applyLedger, buy as buyDecor, emptyLedger, grant as grantCoins, loadLedger, place as placeDecor, progressView, saveMonitor as saveMonitorCmd, type CommandResult, type Effects, type LedgerEvent, type LedgerState } from './ledger.ts';
 import { AgentTerminal } from './terminal.ts';
 import { Ticker } from './ticker.ts';
 import { Outbox } from './outbox.ts';
@@ -4697,6 +4697,13 @@ export class Swarm {
     const from = spot(body.from);
     if (slot === undefined || from === undefined) throw new HttpError(400, 'slot and from are decoration spots (or null)');
     return this.command(placeDecor(this.state.progress, repo.id, repo.fullName, { item: body.item, slot, from }, Date.now()));
+  }
+
+  /** Remember a placed browser monitor's last address and volume (#24), by its stable instance id. */
+  saveMonitor(repoId: string, id: unknown, body: { url?: unknown; volume?: unknown; muted?: unknown }): ProgressView {
+    if (typeof id !== 'string' || !id) throw new HttpError(400, 'A monitor needs its id');
+    const repo = this.repo(repoId);
+    return this.command(saveMonitorCmd(this.state.progress, repo.id, id, body ?? {}));
   }
 
   /** The player finished a coffee; `id` is the browser's own for it, so a retried report counts once. */
