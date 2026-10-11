@@ -48,11 +48,18 @@ interface Pairing {
   cli: string;
   model: string;
 }
+/** What the runtime hands the backend for a session: the CLI and model the session really runs. */
+interface SessionStart {
+  terminal?: unknown;
+  cli?: string;
+  model: string;
+}
 type Internals = {
   state: { agents: Agent[]; repos: Repo[]; qa: QaRec[]; settings: Settings };
   startPipelineWork(repo: Repo): boolean;
   runQa: (tester: Agent, repo: Repo, rec: QaRec) => void;
   pairingOf(a: Agent): Pairing;
+  startAgentSession(a: Agent, repo: Repo, cwd: string, prompt: string, systemAppend: string, resumeSessionId?: string, outputSchema?: unknown): void;
 };
 
 const PR = 9999; // a number the demo floor never lists, so it counts as an open PR waiting for QA
@@ -97,6 +104,41 @@ async function pickFor(
 }
 
 const testerOf = (p: Pick) => (p.runQa.mock.calls[0][0] as Agent).id;
+
+/**
+ * The session a fresh QA run for one agent really starts, through the real `startAgentSession` (the same path `runQa`
+ * uses), with what the runtime hands the backend captured. A no-op session handle is returned so no fake session runs;
+ * only the resolved CLI, model and terminal matter here. The desk is taken to exist so the session starts at once.
+ */
+async function sessionFor(
+  cli: 'claude' | 'opencode' | '',
+  opts: { model?: string; runtime?: 'terminal' | 'sdk'; terminals?: boolean; defaultCli?: 'claude' | 'opencode' } = {},
+): Promise<{ pairing: Pairing; session: SessionStart }> {
+  const backend = createDemoBackend();
+  if (opts.terminals !== undefined) backend.terminals = opts.terminals;
+  backend.deskExists = () => true;
+  const started: SessionStart[] = [];
+  backend.startSession = ((o: SessionStart) => {
+    started.push(o);
+    return { send: () => undefined, stop: () => undefined };
+  }) as unknown as typeof backend.startSession;
+  const swarm = new Swarm(backend);
+  await swarm.connectRepo('demo-co/pixel-todo');
+  const internals = swarm as unknown as Internals;
+  const repo = internals.state.repos[0];
+  if (opts.runtime) internals.state.settings.runtime = opts.runtime;
+  if (opts.defaultCli) internals.state.settings.defaultCli = opts.defaultCli;
+  const onFloor = () => internals.state.agents.filter((a) => a.repoId === repo.id);
+  while (onFloor().length < 1) await swarm.hireAgent(repo.id, {});
+  const a = onFloor()[0];
+  Object.assign(a, { cli, model: opts.model ?? '', status: 'idle', task: 'qa', prNumber: PR });
+  const pairing = internals.pairingOf(a);
+  internals.startAgentSession(a, repo, '/demo/desk', 'QA it', '');
+  const session = started[0];
+  expect(session).toBeTruthy();
+  await swarm.shutdown().catch(() => undefined);
+  return { pairing, session };
+}
 
 describe('QA pairing at runtime (#8)', () => {
   it("a DeepSeek (OpenCode) agent's PR is tested by the Claude agent in the terminal runtime", async () => {
@@ -178,6 +220,43 @@ describe('QA pairing at runtime (#8)', () => {
       expect(testerOf(terminal)).toBe(terminal.floor[1].id); // a different coding agent, whatever the model
       const sdk = await pickFor(agents, 0, { runtime: 'sdk' });
       expect(testerOf(sdk)).toBe(sdk.floor[2].id); // all Claude now, so the different model wins
+    });
+  });
+
+  // The pairing that picks the tester must be the pairing the tester's fresh session really runs, or QA is assigned by
+  // one CLI/model and runs another. These start the real session path (startAgentSession) and compare.
+  describe("the reviewer's fresh session runs the pairing the scheduler resolved", () => {
+    it("in the terminal runtime an OpenCode agent's QA session runs OpenCode, with the resolved model", async () => {
+      const { pairing, session } = await sessionFor('opencode', { runtime: 'terminal' });
+      expect(pairing.cli).toBe('opencode');
+      expect(session.terminal).toBeTruthy(); // the agent's own terminal
+      expect(session.cli).toBe(pairing.cli);
+      expect(session.model).toBe(pairing.model);
+    });
+
+    it('a per-agent model override reaches the terminal session, matching the pairing', async () => {
+      const { pairing, session } = await sessionFor('claude', { model: 'claude-opus-5', runtime: 'terminal' });
+      expect(session.terminal).toBeTruthy();
+      expect(session.cli).toBe('claude');
+      expect(session.model).toBe('claude-opus-5');
+      expect(session.model).toBe(pairing.model);
+    });
+
+    it('in the SDK runtime the session is the SDK (no terminal, no CLI), a Claude model, as paired', async () => {
+      const { pairing, session } = await sessionFor('opencode', { runtime: 'sdk' });
+      expect(pairing.cli).toBe('claude');
+      expect(session.terminal).toBeUndefined(); // the SDK, not a terminal
+      expect(session.cli).toBeUndefined(); // Claude Code via the agent SDK
+      expect(session.model).toBe(pairing.model);
+      expect(session.model).toMatch(/^claude/);
+    });
+
+    it('under the unavailable-terminal fallback the session is Claude Code too, as paired', async () => {
+      const { pairing, session } = await sessionFor('opencode', { runtime: 'terminal', terminals: false });
+      expect(pairing.cli).toBe('claude');
+      expect(session.terminal).toBeUndefined();
+      expect(session.model).toBe(pairing.model);
+      expect(session.model).toMatch(/^claude/);
     });
   });
 });
