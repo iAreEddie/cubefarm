@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { findCodexRollout, lostConversation, resumableSession } from './cliRunner.ts';
+import { cliFinished, findCodexRollout, lostConversation, resumableSession } from './cliRunner.ts';
 import { OPENCODE_PLUGIN_SOURCE } from './clis.ts';
 
 describe('resumableSession', () => {
@@ -56,5 +56,48 @@ describe('OpenCode plugin (#15)', () => {
   it('reads the session messages and forwards their usage, not just the reply text', () => {
     expect(OPENCODE_PLUGIN_SOURCE).toContain('client.session.messages');
     expect(OPENCODE_PLUGIN_SOURCE).toContain('usage');
+  });
+});
+
+describe('cliFinished', () => {
+  const exit = (over: Partial<Parameters<typeof cliFinished>[0]> = {}) =>
+    cliFinished({ cli: 'opencode', exitCode: 0, turnDone: false, turnError: null, lastText: '', elapsedMs: 5000, ...over });
+
+  it("treats OpenCode's clean exit after a turn as finished, even if the plugin's report lost the race", () => {
+    expect(exit()).toBe(true);
+  });
+
+  it('treats a reported OpenCode turn as finished even with no final text', () => {
+    expect(exit({ turnDone: true })).toBe(true);
+  });
+
+  it('treats OpenCode with a captured final message as finished', () => {
+    expect(exit({ lastText: 'Opened the pull request.' })).toBe(true);
+  });
+
+  it('keeps an OpenCode session that dies mid-turn an error', () => {
+    expect(exit({ exitCode: 1 })).toBe(false);
+  });
+
+  it('keeps an OpenCode session that never authenticated (a non-zero exit) an error', () => {
+    expect(exit({ exitCode: 1, elapsedMs: 1200 })).toBe(false);
+  });
+
+  it('keeps an OpenCode turn the plugin reported as failed an error', () => {
+    expect(exit({ turnDone: true, turnError: 'OpenCode: unauthorized' })).toBe(false);
+  });
+
+  it('a reported turn is still an error when the process exits non-zero', () => {
+    expect(exit({ exitCode: 2, turnDone: true, lastText: 'text' })).toBe(false);
+  });
+
+  it("finishes a Claude Code turn only when it captured text", () => {
+    expect(exit({ cli: 'claude', lastText: 'Done.' })).toBe(true);
+    expect(exit({ cli: 'claude' })).toBe(false);
+  });
+
+  it('gives Codex a clean exit after a long run, but not a quick one', () => {
+    expect(exit({ cli: 'codex', elapsedMs: 60_000 })).toBe(true);
+    expect(exit({ cli: 'codex', elapsedMs: 3000 })).toBe(false);
   });
 });

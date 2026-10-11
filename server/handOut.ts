@@ -2,7 +2,7 @@
 // desk can't even be set up for it. A desk that fails to prepare ran nothing, so its developer is free again at once; the PR is what
 // keeps failing, so it is the PR that sits out, and its fix/QA budget that pays.
 
-import type { AgentStatus } from '../shared/types.ts';
+import type { AgentCli, AgentStatus } from '../shared/types.ts';
 
 /** The parts of the PR's author that decide who gets its fix. */
 export interface FixAuthor {
@@ -25,14 +25,38 @@ export function fixGoesTo(author: FixAuthor | null, authorFree: boolean, prNumbe
 /** How long a PR waits for an agent other than its author to come free before the author tests it themselves. */
 export const SELF_QA_WAIT_MS = 15 * 60_000;
 
+/** What an agent runs, defaults resolved: the pairing a QA tester is preferred to differ from the PR's author by. */
+export interface TesterPairing {
+  cli: AgentCli;
+  model: string;
+}
+
 /**
- * Who of the floor's free agents (by desk) tests a PR: anyone but its author, those whose failed PRs wait for them
- * last (they stay free for their own fixes). The author tests their own PR, in a fresh session like anyone, only when
- * nobody else on the floor can (`othersCan`: another agent who isn't stopped) or after SELF_QA_WAIT_MS without one.
- * Null: it waits.
+ * Who of the floor's free agents (by desk) tests a PR: anyone but its author, preferring a tester whose resolved
+ * coding agent differs from the author's, then one whose model differs (cheap builders are checked by a different
+ * agent), and those whose failed PRs wait for them last (they stay free for their own fixes). The author tests their
+ * own PR, in a fresh session like anyone, only when nobody else on the floor can (`othersCan`: another agent who isn't
+ * stopped) or after SELF_QA_WAIT_MS without one. Null: it waits.
  */
-export function pickTester<T extends { id: string; desk: number }>(free: T[], author: string | null, owed: ReadonlySet<string>, othersCan: boolean, waitedMs: number): T | null {
-  const others = free.filter((a) => a.id !== author).sort((x, y) => Number(owed.has(x.id)) - Number(owed.has(y.id)) || x.desk - y.desk);
+export function pickTester<T extends { id: string; desk: number }>(
+  free: T[],
+  author: string | null,
+  pairingOf: (a: T) => TesterPairing,
+  authorPair: TesterPairing | null,
+  owed: ReadonlySet<string>,
+  othersCan: boolean,
+  waitedMs: number,
+): T | null {
+  const rank = (a: T) => {
+    if (!authorPair) return 0; // nobody to differ from: anyone free, as before
+    const p = pairingOf(a);
+    if (p.cli !== authorPair.cli) return 0; // a different coding agent checks it
+    if (p.model !== authorPair.model) return 1; // same agent, a different model
+    return 2; // same agent and model: only if nobody else is free
+  };
+  const others = free
+    .filter((a) => a.id !== author)
+    .sort((x, y) => rank(x) - rank(y) || Number(owed.has(x.id)) - Number(owed.has(y.id)) || x.desk - y.desk);
   if (others.length) return others[0];
   const self = free.find((a) => a.id === author) ?? null;
   return self && (!othersCan || waitedMs >= SELF_QA_WAIT_MS) ? self : null;
