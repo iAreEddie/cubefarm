@@ -14,7 +14,7 @@ What makes QA independent is a **fresh session**, not a different kind of agent:
 
 Fixes go back to the pull request's author while they're around (they have the session and the worktree), and to any free agent otherwise.
 
-An agent has a name and a look, for personality, and three settings: its **provider** (Claude Code, Codex or OpenCode), its **model** and its **reasoning effort**. Each falls back to the office default (Settings) when left empty. The CEO or the manager can change them; changes apply from the agent's next task.
+An agent has a name and a look, for personality, and three settings: its **provider** (Claude Code, Codex or OpenCode), its **model** and its **reasoning effort**. Each falls back to the office default (Settings) when left empty. The CEO or the manager can change them; changes apply from the agent's next task. The CEO is an agent like the others here: it runs the office default unless the manager picks another for it, so an office on OpenCode and DeepSeek gets a DeepSeek CEO.
 
 Most people have one subscription, so the default is every agent on the same provider. Mixing providers (Codex reviewing what Claude wrote, say) is an option for those who have more than one, never a requirement.
 

@@ -8,6 +8,8 @@ import {
   PREPARING_MS,
   QUIET_MS,
   REMEDY_EVERY_MS,
+  reportable,
+  REPORT_QUIET_MS,
   triage,
   UNCLOSED_GRACE_MS,
   unclosedIssues,
@@ -35,12 +37,24 @@ const agent = (over: Partial<WatchAgent> = {}): WatchAgent => ({
 });
 
 const rec = (over: Partial<WatchQa> = {}): WatchQa => ({ repoId: 'r1', prNumber: 181, status: 'testing', qaAgentId: 'q1', devAgentId: 'a1', updatedAt: NOW - 10 * MIN, ...over });
-const memory = (): WatchMemory => ({ remedied: new Map(), nudged: new Map() });
+const memory = (): WatchMemory => ({ remedied: new Map(), nudged: new Map(), reported: new Map() });
 
 describe('diagnose', () => {
   it('finds a session with no output or tool activity for 20 minutes', () => {
     expect(diagnose([agent({ activeAt: NOW - QUIET_MS + 1 })], [], [], NOW)).toEqual([]);
     expect(diagnose([agent({ activeAt: NOW - QUIET_MS })], [], [], NOW)).toMatchObject([{ kind: 'quiet', agentId: 'a1', issueNumber: 207 }]);
+  });
+
+  it('finds an agent whose CLI process is already gone, however recent its output was', () => {
+    // The keeper stops the terminals it holds after ORPHAN_MS with no office, so an agent can be left "working" with
+    // its process dead and no exit ever reported. That is stuck from the moment it died, not from the last output: an
+    // activeAt one minute old must still be found, and marked so the remedy is a requeue rather than a nudge.
+    const fresh = diagnose([agent({ cliDead: true, activeAt: NOW - MIN })], [], [], NOW);
+    expect(fresh).toMatchObject([{ kind: 'quiet', agentId: 'a1', cliDead: true }]);
+    // Its twin without the flag is not found yet, which is the bug this guards.
+    expect(diagnose([agent({ activeAt: NOW - MIN })], [], [], NOW)).toEqual([]);
+    // An agent that is not busy, or has no task, is never flagged this way.
+    expect(diagnose([agent({ cliDead: true, task: null })], [], [], NOW)).toEqual([]);
   });
 
   it('finds a desk being set up for more than 10 minutes', () => {
@@ -89,7 +103,37 @@ describe('unclosedIssues', () => {
   });
 });
 
+describe('reportable', () => {
+  it('names a session quiet for five minutes, well before the healing window', () => {
+    // The point of this list is to tell the CEO early without taking anyone's work: REPORT_QUIET_MS is five minutes,
+    // while the remedies still wait for QUIET_MS (twenty). A slow build must raise a message, not a requeue.
+    expect(REPORT_QUIET_MS).toBe(5 * MIN);
+    expect(REPORT_QUIET_MS).toBeLessThan(QUIET_MS);
+    expect(reportable([agent({ activeAt: NOW - REPORT_QUIET_MS + 1 })], NOW)).toEqual([]);
+    expect(reportable([agent({ activeAt: NOW - REPORT_QUIET_MS })], NOW)).toMatchObject([{ id: 'a1' }]);
+    // Nothing is diagnosed (and so nothing is healed) at that age.
+    expect(diagnose([agent({ activeAt: NOW - REPORT_QUIET_MS })], [], [], NOW)).toEqual([]);
+  });
+
+  it('reports a dead CLI at once, and leaves idle or task-less agents alone', () => {
+    expect(reportable([agent({ cliDead: true, activeAt: NOW })], NOW)).toMatchObject([{ id: 'a1' }]);
+    expect(reportable([agent({ activeAt: NOW - QUIET_MS * 2, status: 'idle' })], NOW)).toEqual([]);
+    expect(reportable([agent({ activeAt: NOW - QUIET_MS * 2, task: null })], NOW)).toEqual([]);
+    expect(reportable([agent({ activeAt: NOW - QUIET_MS * 2, role: 'ceo' })], NOW)).toEqual([]);
+  });
+});
+
 describe('triage', () => {
+  it('requeues a dead CLI straight away instead of nudging a session that is not there', () => {
+    // Nudging writes into a session whose process has already exited, and waiting NUDGE_WAIT_MS after that is another
+    // ten minutes of a floor stuck on work nobody is doing. A dead CLI goes to the requeue on the first pass.
+    const m = memory();
+    const [p] = diagnose([agent({ cliDead: true })], [], [], NOW);
+    expect(p.cliDead).toBe(true);
+    expect(triage([p], m, NOW).auto).toEqual([{ problem: p, remedy: 'requeue' }]);
+    expect(m.nudged.size).toBe(0);
+  });
+
   it('nudges a quiet session once, then requeues its work if it stays (or goes) quiet again', () => {
     const m = memory();
     const [p] = diagnose([agent({ activeAt: NOW - QUIET_MS })], [], [], NOW);
