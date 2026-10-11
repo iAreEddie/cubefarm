@@ -473,6 +473,7 @@ export class Swarm {
       scaling: 'approve',
       maxAgents: DEFAULT_MAX_AGENTS,
       maxQaAtOnce: DEFAULT_MAX_QA_AT_ONCE,
+      restartAfterMerge: false,
       ceoHeartbeatMin: 60,
       managerName: '',
       companyName: '',
@@ -1876,6 +1877,7 @@ export class Swarm {
     const pr = this.repoRt.get(repo.id)?.pulls.find((p) => p.number === number) ?? (await this.backend.prDetails(repo.fullName, number));
     await this.backend.mergePull(repo.fullName, number, method);
     this.toast('success', `Merged PR #${number} into ${repo.defaultBranch}`);
+    this.afterMergeReboot(number);
     this.notifyMerge(repo, number, pr.title);
     await this.closeResolvedIssues(repo, number, pr);
     await this.syncRepo(repo.id);
@@ -3749,6 +3751,20 @@ export class Swarm {
    * Take the office's own update one step (see drainDecision): drain, and once nothing is running, or the drain timed
    * out, hand it to the launcher. True while nothing new may start.
    */
+  /**
+   * A merge landed: if the manager asked the office to reboot after merges, record that a restart is due. The normal
+   * update drain does the rest -- nothing new starts while running sessions finish, then the launcher stops the office
+   * (closing what it owns), updates the folder and starts it again. Silent unless it is asked for and a launcher is
+   * there to act on it, because on its own the office can only report that it is behind.
+   */
+  private afterMergeReboot(prNumber: number): void {
+    if (!this.state.settings.restartAfterMerge) return;
+    if (!this.backend.office.launcher) return; // nothing to hand the restart to; the office only reports it is behind
+    this.officeUpdate.requested = true;
+    this.postMessage('office', `🔄 PR #${prNumber} merged: the office will restart once it is quiet, so it comes back on the merged code.`);
+    this.emitOfficeUpdate();
+  }
+
   private officeUpdateTick(): boolean {
     if (!this.officeHead) return false;
     const u = this.officeUpdate;
