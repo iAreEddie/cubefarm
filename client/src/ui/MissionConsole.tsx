@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import { api } from '../api';
 import { fmtDuration, fmtPct, fmtUsd, usageMeter } from '../ops';
 import { useStore } from '../store';
-import type { BudgetView, DoctorFinding, DoctorFix, OpsAlarm, OpsNumbers, RepoView } from '../../../shared/types';
+import type { BudgetView, DoctorFinding, DoctorFix, OpsAlarm, OpsCostView, OpsNumbers, RepoView } from '../../../shared/types';
 import { confirmDialog } from './Confirm';
 
 // The manager's console → Mission control: Claude's usage with "Resume full speed", what needs you (the alarms the
@@ -271,18 +271,58 @@ const COLUMNS: [string, (n: OpsNumbers) => string, string?][] = [
   ['QA wait', (n) => fmtDuration(n.qaWaitMs), 'Median wait for a free agent over the last 24 hours'],
   ['CI', (n) => (n.ciRuns ? `${fmtPct(n.ciPass)} · ${fmtDuration(n.ciMs)}` : '—'), "GitHub's checks over 7 days: pass rate · median time"],
   ['Team', (n) => `${n.busy} busy · ${n.idle} idle${n.errors ? ` · ${n.errors} error` : ''}`],
-  ['Cost today', (n) => `~${fmtUsd(n.costToday)}`, "An estimate from finished sessions' reported cost"],
 ];
+
+/** The provenance label a cost breakdown shows: reported, estimated, a mix, free, or unavailable. */
+const costKindLabel = (kind: OpsCostView['kind']) => kind.replace('mixed', 'reported + estimated').replace('none', 'no data');
+
+/** The office's cost detail (#15): the breakdown, coverage, and the last 24 hours by model. */
+function CostDetail({ cost }: { cost: OpsCostView }) {
+  const hours = cost.elapsedHours >= 23.5 ? 'last 24h' : `last ${Math.max(1, Math.round(cost.elapsedHours))}h`;
+  return (
+    <div className="muted small">
+      <div>
+        Cost ({hours}): <b>~{fmtUsd(cost.totalUsd)}</b> · {costKindLabel(cost.kind)}
+        {cost.reportedUsd > 0 && ` · reported ${fmtUsd(cost.reportedUsd)}`}
+        {cost.estimatedUsd > 0 && ` · estimated ${fmtUsd(cost.estimatedUsd)}`}
+        {cost.unavailable > 0 && ` · ${cost.unavailable} unavailable`}
+        {cost.partialHistory && ` · partial history (${Math.max(1, Math.round(cost.elapsedHours))}h)`}
+      </div>
+      {cost.byModel.length > 0 && (
+        <table className="ops-table" style={{ marginTop: 8 }}>
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th>$ / hour</th>
+              <th>tokens / hour</th>
+              <th>source</th>
+            </tr>
+          </thead>
+          <tbody>
+            {cost.byModel.map((m) => (
+              <tr key={m.model}>
+                <td>{m.model}</td>
+                <td>{m.usdPerHour === null ? '—' : `$${m.usdPerHour.toFixed(2)}`}</td>
+                <td>{m.tokensPerHour === null ? '—' : `${Math.round(m.tokensPerHour).toLocaleString()}`}</td>
+                <td>{costKindLabel(m.kind)}{m.unavailable ? ` · ${m.unavailable} unavailable` : ''}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
 
 function OpsTable() {
   const ops = useStore((s) => s.ops);
   const repos = useStore((s) => s.repos);
-  const rows: [string, string, OpsNumbers, BudgetView | null][] = [
-    ...ops.floors.map((f): [string, string, OpsNumbers, BudgetView | null] => {
+  const rows: [string, string, OpsNumbers, BudgetView | null, OpsCostView | undefined][] = [
+    ...ops.floors.map((f): [string, string, OpsNumbers, BudgetView | null, OpsCostView | undefined] => {
       const r = repos.find((x) => x.id === f.repoId);
-      return [`${f.floor} · ${r?.fullName.split('/')[1] ?? f.repoId}`, r?.color ?? '#ccc', f, r?.budget ?? null];
+      return [`${f.floor} · ${r?.fullName.split('/')[1] ?? f.repoId}`, r?.color ?? '#ccc', f, r?.budget ?? null, f.cost];
     }),
-    ['All floors', '#1f1d2b', ops.total, null],
+    ['All floors', '#1f1d2b', ops.total, null, ops.cost],
   ];
   return (
     <div className="ops-table-wrap">
@@ -307,6 +347,12 @@ function OpsTable() {
             </tr>
           ))}
           <tr>
+            <th title="Last 24 hours of measured usage: reported spend preferred, otherwise estimated from tokens and a verified rate. Unavailable means the CLI reported no measurable usage.">Cost (24h)</th>
+            {rows.map(([name, , , , c]) => (
+              <td key={name}>{c && c.kind !== 'none' ? `~${fmtUsd(c.totalUsd)} · ${costKindLabel(c.kind)}${c.partial ? ' *' : ''}` : <span className="muted">—</span>}</td>
+            ))}
+          </tr>
+          <tr>
             <th title="The manager's cap on this floor's reported spend; not reported: no session has reported a cost, so it never blocks the floor on its own">Budget</th>
             {rows.map(([name, , , b]) => (
               <td key={name}>{b ? <BudgetChip budget={b} /> : <span className="muted">—</span>}</td>
@@ -314,6 +360,7 @@ function OpsTable() {
           </tr>
         </tbody>
       </table>
+      {ops.cost && <CostDetail cost={ops.cost} />}
       {ops.ceoCostToday > 0 && <div className="muted small">The CEO's sessions today: ~{fmtUsd(ops.ceoCostToday)} (in All floors' cost).</div>}
     </div>
   );

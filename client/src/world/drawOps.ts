@@ -302,26 +302,55 @@ export function drawUsage(ctx: CanvasRenderingContext2D, w: number, h: number, d
 
 // ---------- cost ----------
 
-/** Today's cost per floor and the CEO's, from finished sessions' reported cost: an estimate. */
-export function drawCost(ctx: CanvasRenderingContext2D, w: number, h: number, d: { floors: (FloorTag & { usd: number })[]; ceo: number; total: number }) {
-  frame(ctx, w, h, 'COST TODAY', 'estimate · finished sessions');
-  text(ctx, `~${fmtUsd(d.total)}`, w - 40, 150, 84, C.warn, 'right');
-  text(ctx, 'all floors and the CEO', w - 40, 210, 24, C.dim, 'right', 500);
+/** One model's line in the cost screen's 24-hour detail. */
+export interface CostModelLine {
+  model: string;
+  usdPerHour: number | null;
+  tokensPerHour: number | null;
+  kind: string;
+}
+
+/** Mission control's cost screen: the 24-hour total (reported + estimated, labelled), floors and a by-model detail. */
+export function drawCost(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  d: { floors: (FloorTag & { usd: number })[]; ceo: number; total: number; kind: string; partial: boolean; elapsedHours: number; models: CostModelLine[] },
+) {
+  frame(ctx, w, h, 'COST · 24H', 'reported + estimated · measured usage');
+  text(ctx, `~${fmtUsd(d.total)}`, w - 40, 150, 78, C.warn, 'right');
+  const window = d.elapsedHours >= 23.5 ? 'last 24h' : `last ${Math.max(1, Math.round(d.elapsedHours))}h`;
+  const label = d.kind === 'none' ? 'no usage measured' : `${d.kind}${d.partial ? ' · partial' : ''}`;
+  text(ctx, `all floors + CEO · ${label} · ${window}`, w - 40, 202, 24, C.dim, 'right', 500);
+  const half = w * 0.5;
   const rows: (FloorTag & { usd: number })[] = [...d.floors.slice(0, 4), { floor: 0, name: 'CEO', color: C.ceo, usd: d.ceo }];
   const max = Math.max(0.01, ...rows.map((r) => r.usd));
   const top = 250;
-  const rowH = Math.min(56, (h - top - 10) / rows.length);
+  const rowH = Math.min(52, (h - top - 16) / rows.length);
   rows.forEach((r, i) => {
     const y = top + rowH * i + rowH / 2;
-    if (r.floor) floorLabel(ctx, r, 32, y, Math.min(28, rowH * 0.5), 300);
-    else text(ctx, '🧠 CEO', 32, y, Math.min(24, rowH * 0.45), C.ceo, 'left', 700);
-    const x0 = 340;
-    const bw = ((w - 160 - x0) * r.usd) / max;
+    if (r.floor) floorLabel(ctx, r, 32, y, Math.min(26, rowH * 0.5), 220);
+    else text(ctx, '🧠 CEO', 32, y, Math.min(22, rowH * 0.45), C.ceo, 'left', 700);
+    const x0 = 235;
+    const bw = ((half - x0 - 30) * r.usd) / max;
     roundRect(ctx, x0, y - rowH * 0.2, Math.max(6, bw), rowH * 0.4, 6);
     ctx.fillStyle = r.usd ? r.color : C.line;
     ctx.fill();
-    text(ctx, fmtUsd(r.usd), w - 32, y, Math.min(30, rowH * 0.5), r.usd ? C.text : C.dim, 'right');
+    text(ctx, fmtUsd(r.usd), half - 20, y, Math.min(28, rowH * 0.5), r.usd ? C.text : C.dim, 'right');
   });
+  const x = half + 10;
+  ctx.fillStyle = C.line;
+  ctx.fillRect(half, 250, 2, h - 264);
+  text(ctx, 'BY MODEL · $/h · tok/h', x, 268, 22, C.title);
+  d.models.slice(0, 4).forEach((m, i) => {
+    const y = 310 + i * 44;
+    const tone = m.kind === 'unavailable' ? C.dim : m.kind === 'estimated' ? C.warn : C.text;
+    text(ctx, m.model, x, y, 24, tone, 'left', 600, half - 40);
+    const rate = m.usdPerHour === null ? '—' : `$${m.usdPerHour.toFixed(2)}/h`;
+    const tok = m.tokensPerHour === null ? '' : ` · ${Math.round(m.tokensPerHour / 1000)}k/h`;
+    text(ctx, `${rate}${tok}`, w - 32, y, 22, tone, 'right', 600);
+  });
+  if (!d.models.length) text(ctx, 'nothing measured yet', x, 312, 22, C.dim, 'left', 500);
 }
 
 // ---------- the header strip ----------

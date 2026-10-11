@@ -14,6 +14,7 @@ import {
   recordCost,
   recordMerges,
   recordQa,
+  recordUsage,
   startOfDay,
   type OpsFloorState,
   type OpsHistory,
@@ -97,7 +98,7 @@ describe('recording the history', () => {
       },
       NOW,
     );
-    expect(h).toEqual({ merges: [[NOW - MIN, 'o/a', 3, null]], qa: [[NOW, 'o/a', true, 60]], checks: [], cost: [[NOW, '', 1.5]] });
+    expect(h).toEqual({ merges: [[NOW - MIN, 'o/a', 3, null]], qa: [[NOW, 'o/a', true, 60]], checks: [], cost: [[NOW, '', 1.5]], usage: [] });
     expect(loadHistory(undefined, NOW)).toEqual(emptyHistory());
   });
 });
@@ -162,6 +163,7 @@ describe('the numbers', () => {
         [NOW - MIN, '', 0.5],
         [NOW - MIN, 'gone/repo', 7], // a floor that was disconnected
       ],
+      usage: [],
     };
     const v = opsView([floor(), floor({ repoId: 'o/b', floor: 2 })], h, NOW);
     const a = v.floors[0];
@@ -176,6 +178,67 @@ describe('the numbers', () => {
   it('is empty-handed rather than wrong with no history', () => {
     const v = opsView([floor()], emptyHistory(), NOW);
     expect(v.total).toMatchObject({ mergedToday: 0, leadMs: null, qaWaitMs: null, qaPass: null, ciPass: null, ciRuns: 0, ciMs: null, costToday: 0 });
+  });
+});
+
+describe('cost detail (#15)', () => {
+  const usage = (repo: string, model: string, reportedUsd: number | null, at: number) => ({
+    key: `${repo}:${model}:${at}`,
+    sessionId: `${repo}-${at}`,
+    scope: 'message' as const,
+    at,
+    provider: 'claude' as const,
+    model,
+    modelRaw: model,
+    usage: { uncachedInput: 100, cachedInput: 0, cacheWriteInput: 0, output: 50, reasoning: null, reasoningIncludedInOutput: true },
+    reportedUsd,
+    source: 'claude-sdk' as const,
+    repo,
+  });
+
+  it('reconciles company totals with floors plus the CEO, and excludes unrelated usage', () => {
+    const h = emptyHistory();
+    h.since = NOW - 10 * HOUR_MS;
+    h.usage.push(usage('o/a', 'claude-opus-5-5', 1, NOW - 2 * HOUR_MS), usage('', 'claude-opus-5-5', 0.5, NOW - HOUR_MS), usage('gone/repo', 'claude-opus-5-5', 7, NOW - HOUR_MS));
+    const v = opsView([floor(), floor({ repoId: 'o/b', floor: 2 })], h, NOW);
+    expect(v.floors[0].cost!.reportedUsd).toBeCloseTo(1, 6);
+    expect(v.cost!.reportedUsd).toBeCloseTo(1.5, 6);
+    expect(v.cost!.records).toBe(2); // gone/repo is not a connected floor nor the CEO
+    expect(v.cost!.byModel[0]).toMatchObject({ model: 'claude-opus-5-5', usd: 1.5 });
+    expect(v.cost!.partialHistory).toBe(true); // the record starts inside the 24h window
+    expect(v.cost!.elapsedHours).toBeCloseTo(10, 6);
+    expect(v.cost!.byModel[0].usdPerHour).toBeCloseTo(0.15, 6);
+  });
+
+  it('calls the headline a 24-hour total: an older record stays in history but not in the total or rows', () => {
+    const h = emptyHistory();
+    h.since = NOW - 30 * HOUR_MS;
+    h.usage.push(usage('o/a', 'claude-opus-5-5', 2, NOW - HOUR_MS), usage('o/a', 'claude-opus-5-5', 5, NOW - 30 * HOUR_MS));
+    const v = opsView([floor()], h, NOW);
+    expect(v.cost!.reportedUsd).toBeCloseTo(2, 6); // the 30h-old record is outside the window
+    expect(v.cost!.records).toBe(1);
+    expect(v.cost!.byModel.reduce((s, r) => s + r.usd, 0)).toBeCloseTo(v.cost!.totalUsd, 6); // total matches its rows
+    expect(h.usage).toHaveLength(2); // still in history
+  });
+
+  it('deduplicates a resumed session re-read at the office level so the total never inflates', () => {
+    const h = emptyHistory();
+    const record = usage('o/a', 'claude-opus-5-5', 0.0042, NOW - HOUR_MS);
+    recordUsage(h, 'o/a', [record], NOW);
+    recordUsage(h, 'o/a', [record], NOW);
+    const v = opsView([floor()], h, NOW);
+    expect(h.usage).toHaveLength(1); // the re-read record replaces, never appends
+    expect(v.cost!.reportedUsd).toBeCloseTo(0.0042, 6);
+  });
+
+  it('shows an unavailable model without a verified rate, and keeps estimates out of the reported figure', () => {
+    const h = emptyHistory();
+    h.usage.push(usage('o/a', 'gpt-5.6-sol', null, NOW - HOUR_MS));
+    const v = opsView([floor()], h, NOW);
+    expect(v.cost!.reportedUsd).toBe(0);
+    expect(v.cost!.unavailable).toBe(1);
+    expect(v.cost!.partial).toBe(true);
+    expect(v.cost!.byModel[0]).toMatchObject({ model: 'gpt-5.6-sol', kind: 'unavailable', usd: 0 });
   });
 });
 

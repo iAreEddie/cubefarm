@@ -1,5 +1,6 @@
 // Types shared between the swarm server and the 3D client.
 import type { CareerView } from './careers.ts';
+import type { CostRollup, HourlyCost } from './cost.ts';
 import type { ProgressView, RewardView } from './progress.ts';
 
 import type { WeatherSettings, WeatherView, WorldEventSettings } from './outside.ts';
@@ -67,6 +68,20 @@ export interface BudgetView {
   pct: number | null; // 0-100; null without a budget, or without reported spend
   level: BudgetLevel;
   sessions: number; // sessions on this floor that reported a cost
+}
+
+/**
+ * A session's or floor's cost (#15): what was reported and what was estimated, kept apart, with a provenance label
+ * and how much of the measurement is covered. `kind` is 'reported' | 'estimated' | 'free' | 'unavailable' | 'mixed'
+ * | 'none'. Legacy amounts (a session from before telemetry) come with kind 'unavailable' but keep their number.
+ */
+export type AgentCostView = CostRollup;
+
+/** Mission control's cost detail: the breakdown plus the last 24 hours by model (tokens/hour and $/hour). */
+export interface OpsCostView extends CostRollup {
+  byModel: HourlyCost['rows'];
+  elapsedHours: number;
+  partialHistory: boolean;
 }
 
 export interface RepoView {
@@ -241,6 +256,8 @@ export interface AgentView {
   startedAt: number | null;
   endedAt: number | null;
   costUsd: number;
+  /** The last session's cost with its provenance (#15); absent for old snapshots (treated as legacy/unknown). */
+  cost?: AgentCostView;
   turns: number;
   browserUrl: string | null;
   hasScreenshot: boolean;
@@ -473,6 +490,8 @@ export interface OpsFloor extends OpsNumbers {
   repoId: string;
   floor: number;
   alarms: number;
+  /** This floor's cost breakdown and 24-hour by-model detail (#15). */
+  cost?: OpsCostView;
 }
 
 /** Something that needs the manager: a PR the office can't move (needsManager), or an agent in error for over 10 minutes. */
@@ -492,6 +511,8 @@ export interface OpsView {
   floors: OpsFloor[];
   total: OpsNumbers;
   ceoCostToday: number;
+  /** The office's cost breakdown and the last 24 hours by model (#15). */
+  cost?: OpsCostView;
   alarms: OpsAlarm[];
 }
 

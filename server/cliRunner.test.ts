@@ -1,5 +1,10 @@
-import { describe, expect, it } from 'vitest';
-import { cliFinished, lostConversation, resumableSession } from './cliRunner.ts';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import { cliCostSummary, cliFinished, findCodexRollout, lostConversation, resumableSession } from './cliRunner.ts';
+import { OPENCODE_PLUGIN_SOURCE } from './clis.ts';
+import type { UsageRecord } from '../shared/cost.ts';
 
 describe('resumableSession', () => {
   const onDisk = (files: string[]) => (file: string) => files.includes(file);
@@ -26,6 +31,69 @@ describe('lostConversation', () => {
 
   it('ignores other screens', () => {
     expect(lostConversation('Claude Code v2.1.280\n❯ ')).toBe(false);
+  });
+});
+
+describe('findCodexRollout (#15)', () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+  });
+
+  it('finds the dated rollout whose name carries the thread id', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cubefarm-codex-'));
+    dirs.push(home);
+    const day = path.join(home, 'sessions', '2026', '10', '11');
+    fs.mkdirSync(day, { recursive: true });
+    fs.writeFileSync(path.join(day, 'rollout-2026-10-11T11-00-00-thread-abc.jsonl'), '{}');
+    expect(findCodexRollout(home, 'thread-abc')).toBe(path.join(day, 'rollout-2026-10-11T11-00-00-thread-abc.jsonl'));
+    expect(findCodexRollout(home, 'missing')).toBeNull();
+    expect(findCodexRollout(home, '')).toBeNull();
+    expect(findCodexRollout(path.join(home, 'nowhere'), 'thread-abc')).toBeNull();
+  });
+});
+
+describe('OpenCode plugin (#15)', () => {
+  it('reads the session messages and forwards their usage, not just the reply text', () => {
+    expect(OPENCODE_PLUGIN_SOURCE).toContain('client.session.messages');
+    expect(OPENCODE_PLUGIN_SOURCE).toContain('usage');
+  });
+});
+
+describe('cliCostSummary (#15)', () => {
+  const rec = (over: Partial<UsageRecord>): UsageRecord => ({
+    key: 'k',
+    sessionId: 's',
+    scope: 'message',
+    at: Date.UTC(2026, 9, 12, 2, 0), // Monday 02:00 UTC, DeepSeek's peak
+    provider: 'deepseek',
+    model: 'deepseek-flash',
+    modelRaw: 'deepseek/deepseek-flash',
+    usage: { uncachedInput: 1000, cachedInput: 0, cacheWriteInput: 0, output: 400, reasoning: null, reasoningIncludedInOutput: false },
+    reportedUsd: null,
+    source: 'opencode-session',
+    ...over,
+  });
+
+  it('keeps the estimate for a mixed OpenCode session instead of zeroing it', () => {
+    const s = cliCostSummary({ cli: 'opencode', sessionId: 's', reportedUsd: 0, records: [rec({ key: 'a', reportedUsd: 0.0042 }), rec({ key: 'b', reportedUsd: 0 })] });
+    expect(s.costUsd).toBeCloseTo(0.0042, 6);
+    expect(s.estimatedUsd).toBeGreaterThan(0);
+    expect(s.costKind).toBe('mixed');
+  });
+
+  it("labels Claude's status-line total reported, with no estimate", () => {
+    const s = cliCostSummary({ cli: 'claude', sessionId: 's', reportedUsd: 0.5, records: [], lastModel: 'claude-opus-5-5' });
+    expect(s.costUsd).toBeCloseTo(0.5, 6);
+    expect(s.estimatedUsd).toBe(0);
+    expect(s.costKind).toBe('reported');
+  });
+
+  it('is unavailable, never zero, when nothing was measured', () => {
+    const s = cliCostSummary({ cli: 'opencode', sessionId: 's', reportedUsd: 0, records: [] });
+    expect(s.costUsd).toBe(0);
+    expect(s.estimatedUsd).toBe(0);
+    expect(s.costKind).toBe('unavailable');
   });
 });
 

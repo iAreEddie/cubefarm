@@ -164,7 +164,23 @@ export function MissionControl() {
     hint: usage.state === 'pacing' ? `Press ${use} to resume full speed` : usage.state === 'paused' ? "A pause at the limit can't be cleared early" : 'New work starts at full speed',
   };
   const meter = useScreen('usage', BOTTOM_PX, meterData, drawUsage);
-  const cost = useScreen('cost', BOTTOM_PX, { floors: tags.map(({ tag, n }) => ({ ...tag, usd: n.costToday })), ceo: ops.ceoCostToday, total: t.costToday }, drawCost);
+  // Cost (#15): the office's 24h breakdown, each floor's, and the CEO's as the difference (the office total includes
+  // only connected floors and the CEO, so nothing unrelated leaks in).
+  const costData = useMemo(() => {
+    const floors = tags.map(({ tag, n }) => ({ ...tag, usd: n.cost?.totalUsd ?? n.costToday }));
+    const floorSum = floors.reduce((s, f) => s + f.usd, 0);
+    const c = ops.cost;
+    return {
+      floors,
+      ceo: c ? Math.max(0, c.totalUsd - floorSum) : ops.ceoCostToday,
+      total: c?.totalUsd ?? t.costToday,
+      kind: c ? c.kind.replace('mixed', 'reported+estimated').replace('none', 'no usage') : 'no usage',
+      partial: c?.partial ?? true,
+      elapsedHours: c?.elapsedHours ?? 24,
+      models: (c?.byModel ?? []).map((m) => ({ model: m.model, usdPerHour: m.usdPerHour, tokensPerHour: m.tokensPerHour, kind: m.kind })),
+    };
+  }, [tags, ops.cost, ops.ceoCostToday, t.costToday]);
+  const cost = useScreen('cost', BOTTOM_PX, costData, drawCost);
   const alarm = ops.alarms[0] ?? null;
   const strip = useScreen('strip', [2048, 171], { alarms: ops.alarms.map((a) => (ops.floors.length > 1 ? `${a.text} · floor ${a.floor}` : a.text)) }, drawStrip);
 
