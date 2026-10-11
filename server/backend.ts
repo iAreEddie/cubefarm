@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import * as github from './github.ts';
 import * as workspace from './workspace.ts';
 import { startSession, type SessionCallbacks, type SessionHandle, type SessionOptions } from './agentRunner.ts';
-import { hooksReady, officeProcesses, reconnectClis, releaseClis, startCliSession, terminalsAvailable, cliAlive, type ReconnectedCli } from './cliRunner.ts';
+import { hooksReady, officeProcesses, reconnectClis, releaseClis, startCliSession, terminalsAvailable, cliAlive, cliPidFor, type ReconnectedCli } from './cliRunner.ts';
 import { localMachines, type MachineProvider } from './machines.ts';
 import { detectClis } from './clis.ts';
 import { installDesk, type DepsCallbacks, type DepsOutcome } from './deps.ts';
@@ -88,6 +88,12 @@ export interface Backend {
    * keeper stops its terminals after ORPHAN_MS with no office), null when the office never started one there.
    */
   cliAlive(term: AgentTerminal): boolean | null;
+  /**
+   * The pid of this agent's CLI, or 0 when none is running. The office knows the pids it spawns; this is how it learns
+   * which belongs to which agent, so a process found later can be attributed to an owner rather than being an anonymous
+   * orphan that no sweep can safely stop (ownedProcesses.ts).
+   */
+  cliPid(agentId: string): number;
   /** The office is stopping: its CLIs carry on in the keeper through a restart (true), or stop with it. */
   releaseClis(restart: boolean): Promise<void>;
   /** The coding-agent CLIs installed on this machine. */
@@ -169,6 +175,7 @@ export const realBackend: Backend = {
   reconnectClis: (terminalFor) => (terminalsAvailable ? reconnectClis(terminalFor) : Promise.resolve([])),
   hooksReady,
   cliAlive: (term) => (terminalsAvailable ? cliAlive(term) : null),
+  cliPid: (agentId) => (terminalsAvailable ? cliPidFor(agentId) : 0),
   releaseClis,
   detectClis,
   previews: realPreviews,

@@ -175,6 +175,12 @@ export const CEO_ID = 'ceo';
 /** What the office dog is called until the manager renames it (Settings). */
 export const DEFAULT_DOG_NAME = 'Biscuit';
 
+/**
+ * Pull requests allowed under test at once (SwarmSettings.maxQaAtOnce). One: the floor shares one machine, and every
+ * test run pulls the whole suite in. A manager with a bigger machine can raise it, or set 0 for no limit.
+ */
+export const DEFAULT_MAX_QA_AT_ONCE = 1;
+
 /** An agent's currentTool while the office installs their desk's dependencies (status 'preparing'). */
 export const INSTALL_STEP = 'Installing dependencies';
 
@@ -331,6 +337,21 @@ export interface SwarmSettings {
   defaultCli: AgentCli; // what agents run in their terminals unless they have their own
   scaling: 'approve' | 'auto'; // the CEO's team changes wait for the manager (new agents wait in the lobby), or apply at once
   maxAgents: number; // most agents on a floor: 1 to FLOOR_SEATS (DEFAULT_MAX_AGENTS)
+  /**
+   * How many pull requests may be under test at once, office-wide. 0 = no limit.
+   *
+   * Testing is the heaviest thing an agent does: it runs the whole suite (and often a browser) on a machine shared with
+   * every other agent. Measured on an 8-core machine with a 9-agent floor: five PRs in test at once, 27 vitest runs in
+   * flight, 18 workers, 2 GB of them, every core pegged. One at a time keeps the floor honest about the machine it runs
+   * on, and testing is the step that least benefits from company.
+   */
+  maxQaAtOnce: number;
+  /**
+   * Let the office reboot itself once a merge lands, so what it owns is closed and it comes back on the merged code.
+   * The office drains first -- nothing new starts while running sessions finish, up to DRAIN_TIMEOUT_MS -- so this
+   * does not cut work off. Off by default: restarts are the manager's call unless they ask for this.
+   */
+  restartAfterMerge: boolean;
   ceoHeartbeatMin: number; // minutes between the CEO's periodic reviews; 0 = off
   managerName: string; // what the office calls you
   companyName: string;
