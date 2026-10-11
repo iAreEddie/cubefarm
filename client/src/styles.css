@@ -3826,6 +3826,27 @@ input.inline:focus {
 .usage-pill-bad {
   background: #ffc2d1;
 }
+/* A floor's budget against the spend its agents reported (#7). */
+.budget-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border: 2px solid var(--ink);
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.budget-good {
+  background: #b9fbc0;
+}
+.budget-warn {
+  background: #ffe8a3;
+}
+.budget-bad {
+  background: #ffc2d1;
+}
 .usage-gauge {
   height: 14px;
   border: 2px solid var(--ink);

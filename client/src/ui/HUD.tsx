@@ -51,6 +51,26 @@ function UsageChip() {
   );
 }
 
+/** While a floor is over (or near) the budget the manager set; opens the floors that are, in the console. */
+function BudgetHudChip() {
+  const repos = useStore((s) => s.repos);
+  const overlay = useStore((s) => s.overlay);
+  const openOverlay = useStore((s) => s.openOverlay);
+  const over = repos.filter((r) => r.budget.level === 'over');
+  const warn = repos.filter((r) => r.budget.level === 'warning');
+  if (overlay?.kind === 'manager' || (over.length === 0 && warn.length === 0)) return null;
+  const floors = [...over, ...warn].map((r) => r.floor);
+  return (
+    <button
+      className={`office-chip ${over.length ? 'budget-bad' : 'budget-warn'}`}
+      onClick={() => openOverlay({ kind: 'manager', tab: 'floors' })}
+      title={`Floor${floors.length === 1 ? '' : 's'} ${floors.join(', ')}: reported spend against the budget you set. At 100% new issues hold until you raise it.`}
+    >
+      {over.length ? `🛑 ${over.length} floor${over.length === 1 ? '' : 's'} over budget` : `⚠️ ${warn.length} floor${warn.length === 1 ? '' : 's'} near budget`}
+    </button>
+  );
+}
+
 /** The office doctor's findings (server/watchdog.ts); opens them in Mission control. */
 function DoctorChip() {
   const count = useStore((s) => s.doctor.length);
@@ -181,6 +201,7 @@ export function HUD() {
       <div className="hud-chips">
         <OfficeUpdateChip />
         <UsageChip />
+        <BudgetHudChip />
         <DoctorChip />
       </div>
 

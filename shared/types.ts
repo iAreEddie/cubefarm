@@ -57,6 +57,18 @@ export interface PullInfo {
   checkRun?: { ms: number; doneAt: number } | null;
 }
 
+/** How full a floor's budget is: no cap, under 80%, over 80% (warned) or at/over 100% (new issues held). */
+export type BudgetLevel = 'none' | 'ok' | 'warning' | 'over';
+
+/** A floor's cap against the spend its agents have reported (#7). */
+export interface BudgetView {
+  budgetUsd: number; // 0: no budget set
+  spentUsd: number | null; // null: nothing reported yet ("not reported"), never a zero
+  pct: number | null; // 0-100; null without a budget, or without reported spend
+  level: BudgetLevel;
+  sessions: number; // sessions on this floor that reported a cost
+}
+
 export interface RepoView {
   id: string; // "owner/name"
   fullName: string;
@@ -73,6 +85,7 @@ export interface RepoView {
   mission: string; // the manager's brief: what this floor is building
   summary: string; // the CEO's one-line read of the project, e.g. "3D browser game · Three.js + Vite"
   qaBrief: string; // how QA should test this kind of project (written by the CEO, editable)
+  budget: BudgetView; // the manager's cap on the floor's reported spend, and how it stands (#7)
   localPath: string | null; // the manager's own project folder, when the floor lives in one
   checkoutPath: string; // where the floor's main checkout is on disk (localPath, or a clone the office manages)
   cloneStatus: 'pending' | 'cloning' | 'ready' | 'error';
@@ -334,7 +347,7 @@ export interface SwarmSettings {
 }
 
 /** What the office tells the manager about when they're away (docs/pocket.md). */
-export type NotifyEvent = 'needsHuman' | 'ceoMessage' | 'hire' | 'agentError' | 'usage' | 'merge';
+export type NotifyEvent = 'needsHuman' | 'ceoMessage' | 'hire' | 'agentError' | 'usage' | 'budget' | 'merge';
 
 /** Where it tells them: this browser, Web Push to their devices, or a chat app's webhook. */
 export type NotifyChannel = 'desktop' | 'push' | 'ntfy';
