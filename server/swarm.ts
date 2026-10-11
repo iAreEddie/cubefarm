@@ -2261,12 +2261,22 @@ export class Swarm {
   }
 
   /**
+   * The coding agent an agent's fresh session actually runs: their own in the terminal runtime, but always Claude Code
+   * through the Agent SDK, or when the terminals are unavailable (the keeper couldn't start). QA pairing (#8) compares
+   * this, so it matches the CLI a reviewer's fresh session really runs, not just the one they asked for.
+   */
+  private runtimeCli(a: PersistedAgent): AgentCli {
+    if (a.role === 'ceo') return 'claude';
+    return this.state.settings.runtime === 'terminal' && this.backend.terminals ? a.cli || this.state.settings.defaultCli : 'claude';
+  }
+
+  /**
    * How an agent's next session runs: the CLI in their terminal (the terminal runtime), or Claude Code through the
    * SDK. A session can only be resumed by the CLI that made it, so a follow-up stays with that CLI.
    */
   private sessionRuntime(a: PersistedAgent, resume?: string): { terminal?: AgentTerminal; cli?: AgentCli; label?: string; resumeSessionId?: string } {
     const inTerminal = this.state.settings.runtime === 'terminal' && this.backend.terminals;
-    let cli: AgentCli = a.role === 'ceo' ? 'claude' : a.cli || this.state.settings.defaultCli;
+    let cli: AgentCli = this.runtimeCli(a);
     if (resume && a.sessionCli && a.sessionCli !== cli) {
       if (inTerminal) cli = a.sessionCli;
       else if (a.sessionCli !== 'claude') resume = undefined;
@@ -2283,7 +2293,7 @@ export class Swarm {
 
   /** What an agent actually runs, office default resolved: the pairing QA is preferred to differ from the author by (#8). */
   private pairingOf(a: PersistedAgent): TesterPairing {
-    const cli = a.role === 'ceo' ? 'claude' : a.cli || this.state.settings.defaultCli;
+    const cli = this.runtimeCli(a);
     return { cli, model: this.modelFor(a, cli) };
   }
 
